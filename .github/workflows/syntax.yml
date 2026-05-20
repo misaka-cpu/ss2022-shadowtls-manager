@@ -1,0 +1,49 @@
+name: Syntax Check
+
+# 只做静态语法检查；不安装任何服务、不修改 nftables、不修改防火墙
+on:
+  push:
+    branches: [ main, master, "v*" ]
+    paths:
+      - "**.sh"
+      - ".github/workflows/syntax.yml"
+  pull_request:
+    paths:
+      - "**.sh"
+      - ".github/workflows/syntax.yml"
+  workflow_dispatch:
+
+# 防止并发跑同一分支
+concurrency:
+  group: syntax-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  bash-n:
+    name: bash -n
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: bash -n ss2022-shadowtls-manager.sh
+        run: bash -n ss2022-shadowtls-manager.sh
+
+      - name: bash -n install.sh
+        run: bash -n install.sh
+
+      # 软性 shellcheck —— 输出供阅读，不阻断 CI
+      - name: shellcheck (informational only, never fails the build)
+        continue-on-error: true
+        run: |
+          sudo apt-get update -y >/dev/null
+          sudo apt-get install -y shellcheck >/dev/null
+          echo "::group::shellcheck ss2022-shadowtls-manager.sh"
+          shellcheck -S warning ss2022-shadowtls-manager.sh || true
+          echo "::endgroup::"
+          echo "::group::shellcheck install.sh"
+          shellcheck -S warning install.sh || true
+          echo "::endgroup::"
