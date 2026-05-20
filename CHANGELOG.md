@@ -29,7 +29,7 @@
 - `show_install_result_full` / `show_shadowtls_enable_result_full` / `show_recommended_full_uri_and_qrcode_no_confirm`：安装 / 启用动作完成后**直接展示完整链接 + 终端二维码**，无需二次确认
 - 卸载完成总结新增端口释放状态明细，区分"本项目残留"与"非本项目进程"占用
 
-## [v0.1.5-alpha] — 菜单返回 UX
+## [v0.1.6-alpha] — 菜单返回 UX
 
 ### Fixed
 - **设置时区菜单输入 0 返回仍要按一次回车**：引入 `MENU_RC_SKIP_PAUSE=10` 约定；`set_timezone_interactive` 0/留空 → `return 10`，`submenu_network_time` 案 6 守卫 `[[ $? -eq ... ]] && continue` 跳过父 `press_any_key`

@@ -17,7 +17,7 @@ umask 077
 # -----------------------------------------------------------------------------
 # 常量与路径定义（仅允许操作以下路径）
 # -----------------------------------------------------------------------------
-readonly SCRIPT_VERSION="v0.1.5-alpha"
+readonly SCRIPT_VERSION="v0.1.6-alpha"
 
 # 菜单返回码约定（v0.1.5）：
 #   - 普通返回（默认 0 / 非 10）：调用方按既有规则处理 press_any_key
@@ -319,19 +319,143 @@ is_valid_port() {
 # 检查端口是否被占用；占用则输出占用进程
 check_port_free() {
     local port="$1" proto="${2:-tcp}"
-    local hit=""
-    if command -v ss >/dev/null 2>&1; then
-        if [[ "${proto}" == "udp" ]]; then
-            hit="$(ss -lunp 2>/dev/null | awk -v p=":${port}" '$0 ~ p {print}')"
-        else
-            hit="$(ss -ltnp 2>/dev/null | awk -v p=":${port}" '$0 ~ p {print}')"
-        fi
-    fi
-    if [[ -n "${hit}" ]]; then
+    if _port_in_use "${port}" "${proto}"; then
         log_warn "端口 ${port}/${proto} 已被占用："
-        printf '%s\n' "${hit}"
+        _port_occupiers "${port}" "${proto}"
         return 1
     fi
+    return 0
+}
+
+# 仅判断端口是否被占用；不打印；精确匹配末尾 ":<port>"，避免 18388 误匹配 183889
+_port_in_use() {
+    local port="$1" proto="${2:-tcp}"
+    command -v ss >/dev/null 2>&1 || return 1
+    local cmd
+    if [[ "${proto}" == "udp" ]]; then cmd="ss -lunp"; else cmd="ss -ltnp"; fi
+    ${cmd} 2>/dev/null | awk -v p=":${port}" 'NR>1 && $4 ~ p"$" {found=1} END{exit !found}'
+}
+
+# 打印端口占用进程；如 "端口 18388 当前由 ssserver(pid=xxx) 占用"
+_port_occupiers() {
+    local port="$1" proto="${2:-tcp}"
+    command -v ss >/dev/null 2>&1 || { echo "  (ss 不可用)"; return; }
+    local cmd raw
+    if [[ "${proto}" == "udp" ]]; then cmd="ss -lunp"; else cmd="ss -ltnp"; fi
+    raw="$(${cmd} 2>/dev/null | awk -v p=":${port}" 'NR>1 && $4 ~ p"$" {print}')"
+    if [[ -z "${raw}" ]]; then echo "  (无)"; return; fi
+    printf '%s\n' "${raw}"
+    local name pid line
+    while IFS= read -r line; do
+        if [[ "${line}" =~ users:\(\(\"([^\"]+)\",pid=([0-9]+) ]]; then
+            name="${BASH_REMATCH[1]}"
+            pid="${BASH_REMATCH[2]}"
+            printf '  -> 端口 %s 当前由 %s(pid=%s) 占用\n' "${port}" "${name}" "${pid}"
+        fi
+    done <<< "${raw}"
+}
+
+# 判断 port/proto 占用者是否为本项目（ssserver / shadow-tls）
+_port_occupier_is_project() {
+    local port="$1" proto="${2:-tcp}"
+    command -v ss >/dev/null 2>&1 || return 1
+    local cmd raw
+    if [[ "${proto}" == "udp" ]]; then cmd="ss -lunp"; else cmd="ss -ltnp"; fi
+    raw="$(${cmd} 2>/dev/null | awk -v p=":${port}" 'NR>1 && $4 ~ p"$" {print}')"
+    [[ "${raw}" == *'"ssserver"'* ]] || [[ "${raw}" == *'"shadow-tls"'* ]]
+}
+
+# 等待端口在 wait_sec 秒内释放；释放返回 0，否则打印占用者并返回 1
+wait_port_free() {
+    local port="$1" proto="${2:-tcp}" wait_sec="${3:-5}"
+    local i=0
+    while (( i < wait_sec )); do
+        _port_in_use "${port}" "${proto}" || return 0
+        sleep 1; i=$((i+1))
+    done
+    log_warn "端口 ${port}/${proto} 在 ${wait_sec}s 内仍被占用："
+    _port_occupiers "${port}" "${proto}"
+    return 1
+}
+
+# 列出本项目残留进程（去重 pid + 进程命令行）
+# 参数 kind: ssserver | shadow-tls
+check_project_processes() {
+    local kind="$1" bin
+    case "${kind}" in
+        ssserver)   bin="${SS_BINARY}" ;;
+        shadow-tls) bin="${STLS_BINARY}" ;;
+        *) return 1 ;;
+    esac
+    {
+        if command -v pgrep >/dev/null 2>&1; then
+            pgrep -af -- "${bin}"        2>/dev/null
+            pgrep -af -- "(^|/)${kind}( |$)" 2>/dev/null
+        else
+            ps -eo pid,args 2>/dev/null \
+              | awk -v b="${bin}" -v k="${kind}" '
+                  $0 ~ "(^|[ /])"b"([ ]|$)" || $0 ~ "(^|/)"k"([ ]|$)" {print}
+                ' \
+              | grep -v 'awk -v ' || true
+        fi
+    } | awk '!seen[$1]++'
+}
+
+# 强力停止本项目两个服务并清理残留进程（TERM → 等 2s → KILL）
+stop_project_services_strict() {
+    local svc
+    for svc in "${STLS_SERVICE_NAME}" "${SS_SERVICE_NAME}"; do
+        if systemctl list-unit-files 2>/dev/null | grep -q "^${svc}"; then
+            systemctl disable --now "${svc}" >/dev/null 2>&1 || true
+            log_info "已停止并禁用：${svc}"
+        else
+            log_info "跳过（不存在）：${svc}"
+        fi
+    done
+    systemctl daemon-reload >/dev/null 2>&1 || true
+    systemctl reset-failed "${SS_SERVICE_NAME}" "${STLS_SERVICE_NAME}" >/dev/null 2>&1 || true
+
+    local kind pids still
+    for kind in ssserver shadow-tls; do
+        pids="$(check_project_processes "${kind}" | awk '{print $1}' | sort -u | xargs)"
+        [[ -z "${pids}" ]] && continue
+        log_warn "${kind} 残留进程，将先 TERM 后 KILL：${pids}"
+        # shellcheck disable=SC2086
+        kill -TERM ${pids} 2>/dev/null || true
+        sleep 2
+        still="$(check_project_processes "${kind}" | awk '{print $1}' | sort -u | xargs)"
+        if [[ -n "${still}" ]]; then
+            log_warn "${kind} TERM 后仍存在，发送 KILL：${still}"
+            # shellcheck disable=SC2086
+            kill -KILL ${still} 2>/dev/null || true
+            sleep 1
+        fi
+        log_ok "${kind} 残留进程已清理"
+    done
+}
+
+# 综合判定 SS2022 是否真正已安装（info + 配置 + service + 二进制 均在）
+is_ss2022_installed() {
+    [[ "$(info_get '.ss2022.installed')" == "true" ]] || return 1
+    [[ -f "${SS_CONFIG}" ]]  || return 1
+    [[ -f "${SS_SERVICE}" ]] || return 1
+    [[ -x "${SS_BINARY}" ]]  || return 1
+    return 0
+}
+
+# 综合判定 ShadowTLS 是否真正已安装
+is_shadowtls_installed() {
+    [[ "$(info_get '.shadowtls.installed')" == "true" ]] || return 1
+    [[ -f "${STLS_SERVICE}" ]] || return 1
+    [[ -x "${STLS_BINARY}" ]]  || return 1
+    return 0
+}
+
+# 综合判定 ShadowTLS 是否真正在启用状态
+is_shadowtls_enabled_real() {
+    is_shadowtls_installed || return 1
+    [[ -f "${STLS_ENV}" ]] || return 1
+    [[ "$(info_get '.shadowtls.enabled')" == "true" ]] || return 1
     return 0
 }
 
@@ -996,9 +1120,24 @@ install_ss2022() {
         if ! is_valid_port "${port}"; then
             log_error "端口非法"; continue
         fi
-        if ! check_port_free "${port}" tcp; then
-            read -r -p "端口被占用，仍使用? [y/N]: " a
-            [[ "${a}" =~ ^[Yy]$ ]] && break
+        if _port_in_use "${port}" tcp; then
+            log_warn "端口 ${port}/tcp 当前被占用："
+            _port_occupiers "${port}" tcp
+            # 占用者是本项目残留 → 提示清理
+            if _port_occupier_is_project "${port}" tcp; then
+                log_warn "检测到旧 ssserver / shadow-tls 残留进程，可能是上次卸载未清理干净。"
+                read -r -p "是否清理本项目残留进程? [y/N]: " a
+                if [[ "${a}" =~ ^[Yy]$ ]]; then
+                    stop_project_services_strict
+                    if ! _port_in_use "${port}" tcp; then
+                        log_ok "端口 ${port} 已释放"
+                        break
+                    fi
+                    log_warn "清理后端口仍被占用，请输入其它端口"
+                    continue
+                fi
+            fi
+            log_info "请输入其它端口，或先在外部清理占用进程"
             continue
         fi
         break
@@ -1086,8 +1225,8 @@ install_ss2022() {
         fi
     fi
 
-    # 直接展示节点信息（遮蔽版）+ 询问完整链接 + 二维码
-    show_node_info_with_qrcode
+    # v0.1.6：用户主动安装动作后直接展示完整结果（链接 + 二维码）
+    show_install_result_full
 }
 
 uninstall_ss2022() {
@@ -1180,9 +1319,23 @@ enable_shadowtls() {
         read -r -p "请输入 ShadowTLS 公网端口 [默认 8443，常见 443/8443/2053/2087]: " stls_port
         [[ -z "${stls_port}" ]] && stls_port=8443
         is_valid_port "${stls_port}" || { log_error "端口非法"; continue; }
-        if ! check_port_free "${stls_port}" tcp; then
-            read -r -p "端口被占用，仍使用? [y/N]: " a
-            [[ "${a}" =~ ^[Yy]$ ]] && break
+        if _port_in_use "${stls_port}" tcp; then
+            log_warn "端口 ${stls_port}/tcp 当前被占用："
+            _port_occupiers "${stls_port}" tcp
+            if _port_occupier_is_project "${stls_port}" tcp; then
+                log_warn "检测到旧 shadow-tls / ssserver 残留进程，可能是上次卸载未清理干净。"
+                read -r -p "是否清理本项目残留进程? [y/N]: " a
+                if [[ "${a}" =~ ^[Yy]$ ]]; then
+                    stop_project_services_strict
+                    if ! _port_in_use "${stls_port}" tcp; then
+                        log_ok "端口 ${stls_port} 已释放"
+                        break
+                    fi
+                    log_warn "清理后端口仍被占用，请输入其它端口"
+                    continue
+                fi
+            fi
+            log_info "请输入其它端口，或先在外部清理占用进程"
             continue
         fi
         break
@@ -1276,7 +1429,8 @@ EOF
     restart_service "${SS_SERVICE_NAME}"
     restart_service "${STLS_SERVICE_NAME}"
     log_ok "ShadowTLS v3 已启用"
-    show_node_info
+    # v0.1.6：启用成功后直接展示完整推荐链接 + 二维码
+    show_shadowtls_enable_result_full
 }
 
 disable_shadowtls() {
@@ -1428,6 +1582,13 @@ EOF
     read -r -p "请输入 YES 确认完整卸载： " ans
     [[ "${ans}" == "YES" ]] || { log_info "已取消"; return; }
 
+    # 0) 在停服前快照"将要释放的端口"
+    local pre_ss_public_port pre_ss_local_port pre_stls_port pre_ss_mode
+    pre_ss_public_port="$(info_get '.ss2022.public_port')"
+    pre_ss_local_port="$(info_get '.ss2022.local_port')"
+    pre_stls_port="$(info_get '.shadowtls.port')"
+    pre_ss_mode="$(info_get '.ss2022.mode')"
+
     # 1) 备份
     local ts backup_dir
     ts="$(date +%Y%m%d-%H%M%S)"
@@ -1439,7 +1600,6 @@ EOF
             [[ -f "${src}" ]] && cp -a -- "${src}" "${backup_dir}/" 2>/dev/null && \
                 log_info "已备份：${src}"
         done
-        # 备份目录中所有备份/二维码副本（如有）
         if [[ -d "${PROJECT_BACKUP_DIR}" ]]; then
             cp -a -- "${PROJECT_BACKUP_DIR}" "${backup_dir}/" 2>/dev/null && \
                 log_info "已备份：${PROJECT_BACKUP_DIR}"
@@ -1449,18 +1609,19 @@ EOF
         log_warn "创建备份目录失败：${backup_dir}（继续卸载）"
     fi
 
-    # 2) 停止并禁用服务（不存在则跳过）
-    if systemctl list-unit-files 2>/dev/null | grep -q "^${STLS_SERVICE_NAME}"; then
-        systemctl disable --now "${STLS_SERVICE_NAME}" >/dev/null 2>&1 || true
-        log_info "已停止并禁用：${STLS_SERVICE_NAME}"
+    # 2) 严格停服 + 清理残留进程（disable --now → reset-failed → TERM → KILL）
+    stop_project_services_strict
+
+    local services_state_ss services_state_stls
+    if systemctl is-active --quiet "${SS_SERVICE_NAME}"   2>/dev/null; then
+        services_state_ss="仍在运行（异常）"
     else
-        log_info "跳过（不存在）：${STLS_SERVICE_NAME}"
+        services_state_ss="已停止 / 不存在"
     fi
-    if systemctl list-unit-files 2>/dev/null | grep -q "^${SS_SERVICE_NAME}"; then
-        systemctl disable --now "${SS_SERVICE_NAME}" >/dev/null 2>&1 || true
-        log_info "已停止并禁用：${SS_SERVICE_NAME}"
+    if systemctl is-active --quiet "${STLS_SERVICE_NAME}" 2>/dev/null; then
+        services_state_stls="仍在运行（异常）"
     else
-        log_info "跳过（不存在）：${SS_SERVICE_NAME}"
+        services_state_stls="已停止 / 不存在"
     fi
 
     # 3) 删除本项目文件（每个路径明确写出，避免宽泛 rm -rf）
@@ -1484,28 +1645,41 @@ EOF
     _safe_rm_file "${SS_BINARY}"
 
     # 快捷命令 wrapper：必须带项目标记才删除，否则跳过保护
+    local shortcut_state
     if [[ -e "${SHORTCUT_PATH}" ]]; then
         if grep -q "${SHORTCUT_MARKER}" "${SHORTCUT_PATH}" 2>/dev/null; then
             if rm -f -- "${SHORTCUT_PATH}" 2>/dev/null; then
                 removed+=("${SHORTCUT_PATH}")
+                shortcut_state="已删除"
             else
                 skipped+=("${SHORTCUT_PATH}（删除失败）")
+                shortcut_state="删除失败"
             fi
         else
             skipped+=("${SHORTCUT_PATH}（不是本项目创建，保留）")
+            shortcut_state="不是本项目创建，保留"
         fi
     else
         skipped+=("${SHORTCUT_PATH}（不存在）")
+        shortcut_state="不存在"
     fi
 
-    # 4) PROJECT_ETC：项目自有目录，整目录删除（路径前缀严格校验）
+    # 4) PROJECT_ETC：项目自有目录，整目录删除（路径前缀严格校验，含 info.json / qrcode / backup）
+    local etc_state
     if [[ -d "${PROJECT_ETC}" && "${PROJECT_ETC}" == "/etc/ss2022-shadowtls-manager" ]]; then
-        rm -rf -- "${PROJECT_ETC}" && removed+=("${PROJECT_ETC}/") || skipped+=("${PROJECT_ETC}/（删除失败）")
+        if rm -rf -- "${PROJECT_ETC}" 2>/dev/null; then
+            removed+=("${PROJECT_ETC}/")
+            etc_state="已删除"
+        else
+            skipped+=("${PROJECT_ETC}/（删除失败）")
+            etc_state="删除失败"
+        fi
     else
         skipped+=("${PROJECT_ETC}/（不存在或路径不匹配，跳过）")
+        etc_state="不存在"
     fi
 
-    # 5) SS_DIR / STLS_DIR：仅当为空时删除（其它进程可能仍有文件）
+    # 5) SS_DIR / STLS_DIR：仅当为空时删除目录本身
     if [[ -d "${SS_DIR}" ]]; then
         if rmdir "${SS_DIR}" 2>/dev/null; then
             removed+=("${SS_DIR}/")
@@ -1521,38 +1695,79 @@ EOF
         fi
     fi
 
-    # 6) systemd 重载
+    # 6) systemd 重载 + reset-failed
     systemctl daemon-reload >/dev/null 2>&1 || true
+    systemctl reset-failed "${SS_SERVICE_NAME}" "${STLS_SERVICE_NAME}" >/dev/null 2>&1 || true
 
-    # 7) 报告
+    # 7) 端口释放状态（区分本项目仍占用 / 非本项目占用）
+    _port_state_after_uninstall() {
+        local port="$1" proto="${2:-tcp}"
+        [[ -z "${port}" || "${port}" == "0" ]] && { echo "未配置"; return; }
+        if ! _port_in_use "${port}" "${proto}"; then
+            echo "已释放"
+            return
+        fi
+        if _port_occupier_is_project "${port}" "${proto}"; then
+            echo "仍被本项目残留进程占用（详见下方明细）"
+        else
+            echo "仍被非本项目进程占用（详见下方明细）"
+        fi
+    }
+    local port_state_ss_pub port_state_ss_local port_state_stls
+    port_state_ss_pub="$(_port_state_after_uninstall "${pre_ss_public_port}" tcp)"
+    port_state_ss_local="$(_port_state_after_uninstall "${pre_ss_local_port}" tcp)"
+    port_state_stls="$(_port_state_after_uninstall "${pre_stls_port}" tcp)"
+
+    # 8) 总结
     hr
-    log_ok "卸载完成"
-    echo "备份目录：${backup_dir}"
-    echo
-    echo "已删除路径："
-    if (( ${#removed[@]} > 0 )); then
-        printf '  - %s\n' "${removed[@]}"
-    else
-        echo "  (无)"
-    fi
-    echo
-    echo "跳过 / 保留路径："
-    if (( ${#skipped[@]} > 0 )); then
-        printf '  - %s\n' "${skipped[@]}"
-    else
-        echo "  (无)"
-    fi
-    hr
+    log_ok "一键完整卸载完成"
     cat <<EOF
-未删除内容说明：
-  - 未触碰 nftables 规则与 /etc/nftables.conf
-  - 未触碰 nftables-nat-rust-enhanced 项目
-  - 未卸载 apt 包（curl / jq / qrencode / chrony 等仍保留，可按需 apt remove）
-  - 未清理 ufw / firewalld 端口规则；若不再使用，请自行检查并删除：
-      * SS2022 公网端口
-      * ShadowTLS 公网端口
-  - sysctl BBR 配置文件 ${SYSCTL_CONF}（若曾启用）仍保留，可手动删除后 sysctl --system
+
+=== 一键完整卸载完成 ===
+
+已处理：
+- SS2022 服务      ：${services_state_ss}
+- ShadowTLS 服务   ：${services_state_stls}
+- ssserver 二进制  ：$( [[ -e "${SS_BINARY}"   ]] && echo "仍存在（异常）" || echo "已删除/不存在" )
+- shadow-tls 二进制：$( [[ -e "${STLS_BINARY}" ]] && echo "仍存在（异常）" || echo "已删除/不存在" )
+- 快捷命令 ss2022  ：${shortcut_state}
+- 项目状态目录     ：${etc_state}
+- SS2022 公网端口 ${pre_ss_public_port:-未配置}/tcp ：${port_state_ss_pub}
+- SS2022 本机端口 ${pre_ss_local_port:-未配置}/tcp  ：${port_state_ss_local}
+- ShadowTLS 端口  ${pre_stls_port:-未配置}/tcp     ：${port_state_stls}
+
+备份目录：${backup_dir}
+
+说明：
+- 时间同步是系统级状态（systemd-timesyncd / chrony），与本项目无关；状态栏继续显示「已同步」属于正常。
+- 本脚本不会删除 nftables 规则与 /etc/nftables.conf；nftables-nat-rust-enhanced 项目未触碰。
+- ufw / firewalld 端口放行规则未自动清理，可按需手动 ufw delete / firewall-cmd --remove-port。
+- sysctl BBR 配置文件 ${SYSCTL_CONF}（若曾启用）仍保留，可手动删除后 sysctl --system。
+- 如端口仍被非本项目进程占用，请根据下方明细自行处理。
+
 EOF
+
+    if (( ${#removed[@]} > 0 )); then
+        echo "已删除路径明细："
+        printf '  - %s\n' "${removed[@]}"
+        echo
+    fi
+    if (( ${#skipped[@]} > 0 )); then
+        echo "跳过 / 保留路径明细："
+        printf '  - %s\n' "${skipped[@]}"
+        echo
+    fi
+    # 仍被占用的端口给出占用进程明细
+    local p
+    for p in "${pre_ss_public_port}" "${pre_ss_local_port}" "${pre_stls_port}"; do
+        [[ -z "${p}" || "${p}" == "0" ]] && continue
+        if _port_in_use "${p}" tcp; then
+            echo "端口 ${p}/tcp 当前占用者："
+            _port_occupiers "${p}" tcp
+            echo
+        fi
+    done
+    hr
 }
 
 # -----------------------------------------------------------------------------
@@ -2254,6 +2469,53 @@ show_node_info_with_qrcode() {
     fi
 }
 
+# 直接展示推荐 URI + 二维码（不询问），仅在用户主动安装/启用动作后调用
+show_recommended_full_uri_and_qrcode_no_confirm() {
+    log_warn "以下内容包含完整密码和二维码，请勿截图外传。"
+    show_recommended_uri_and_qrcode
+}
+
+# 安装 SS2022 完成后的完整结果展示
+show_install_result_full() {
+    hr
+    echo "=== SS2022 安装完成 ==="
+    print_endpoints_header
+    local method password
+    method="$(info_get '.ss2022.method')"
+    password="$(info_get '.ss2022.password')"
+    echo "SS2022 加密方式：${method}"
+    echo "SS2022 密码    ：${password}"
+    hr
+    show_recommended_full_uri_and_qrcode_no_confirm
+    hr
+    log_info "客户端配置示例（sing-box / mihomo / Shadowrocket / Surge）可在主菜单「查看节点信息」中查看"
+    if shortcut_installed; then
+        log_info "快捷命令 ss2022 已就绪：以后直接输入 ss2022 进入管理菜单"
+    fi
+}
+
+# 启用 ShadowTLS 完成后的完整结果展示
+show_shadowtls_enable_result_full() {
+    hr
+    echo "=== ShadowTLS v3 启用完成 ==="
+    print_endpoints_header
+    local method password stls_pw stls_domain stls_port
+    method="$(info_get '.ss2022.method')"
+    password="$(info_get '.ss2022.password')"
+    stls_pw="$(info_get '.shadowtls.password')"
+    stls_domain="$(info_get '.shadowtls.tls_domain')"
+    stls_port="$(info_get '.shadowtls.port')"
+    echo "SS2022 加密方式  ：${method}"
+    echo "SS2022 密码      ：${password}"
+    echo "ShadowTLS 端口   ：${stls_port}"
+    echo "ShadowTLS 域名   ：${stls_domain}"
+    echo "ShadowTLS 密码   ：${stls_pw}"
+    hr
+    show_recommended_full_uri_and_qrcode_no_confirm
+    hr
+    log_info "客户端配置示例（sing-box / mihomo / Shadowrocket / Surge）可在主菜单「查看节点信息」中查看"
+}
+
 # -----------------------------------------------------------------------------
 # UDP 模式 / BBR
 # -----------------------------------------------------------------------------
@@ -2899,11 +3161,9 @@ EOF
 # 主菜单
 # -----------------------------------------------------------------------------
 status_line() {
-    # H3-F：在函数开头一次性读取常用字段
-    local ss_inst stls_en stls_inst v4 v6 ss_port stls_port mode ss_mode stls_dom
-    ss_inst="$(info_get '.ss2022.installed')"
-    stls_en="$(info_get '.shadowtls.enabled')"
-    stls_inst="$(info_get '.shadowtls.installed')"
+    # v0.1.6：用综合判定（info + 配置文件 + service 文件 + 二进制），
+    # 防止 info.json 残留 / service 文件残留导致状态误判
+    local v4 v6 ss_port stls_port mode ss_mode stls_dom
     v4="$(info_get '.network.ipv4')"
     v6="$(info_get '.network.ipv6')"
     ss_port="$(info_get '.ss2022.public_port')"
@@ -2912,23 +3172,55 @@ status_line() {
     ss_mode="$(info_get '.ss2022.mode')"
     stls_dom="$(info_get '.shadowtls.tls_domain')"
 
+    local ss_installed=0 stls_installed=0 stls_enabled=0
+    is_ss2022_installed       && ss_installed=1
+    is_shadowtls_installed    && stls_installed=1
+    is_shadowtls_enabled_real && stls_enabled=1
+
     local ss_active stls_active
-    systemctl is-active --quiet "${SS_SERVICE_NAME}"    && ss_active="${C_GREEN}运行中${C_RESET}"   || ss_active="${C_RED}未运行${C_RESET}"
-    systemctl is-active --quiet "${STLS_SERVICE_NAME}"  && stls_active="${C_GREEN}运行中${C_RESET}" || stls_active="${C_RED}未运行${C_RESET}"
+    if (( ss_installed )) && systemctl is-active --quiet "${SS_SERVICE_NAME}" 2>/dev/null; then
+        ss_active="${C_GREEN}运行中${C_RESET}"
+    else
+        ss_active="${C_RED}未运行${C_RESET}"
+    fi
+    if (( stls_installed )) && systemctl is-active --quiet "${STLS_SERVICE_NAME}" 2>/dev/null; then
+        stls_active="${C_GREEN}运行中${C_RESET}"
+    else
+        stls_active="${C_RED}未运行${C_RESET}"
+    fi
+
+    # 未安装时端口 / 模式显示 N/A，避免给残留 info.json 留下读数错觉
+    local ss_label stls_label ss_port_disp ss_mode_disp stls_port_disp stls_dom_disp
+    if (( ss_installed )); then
+        ss_label="已安装"
+        ss_port_disp="${ss_port:-N/A}"
+        ss_mode_disp="${ss_mode:-N/A}"
+    else
+        ss_label="未安装"
+        ss_port_disp="N/A"
+        ss_mode_disp="N/A"
+    fi
+    if (( stls_installed )); then
+        stls_label="已安装"
+        stls_port_disp="${stls_port:-N/A}"
+        stls_dom_disp="${stls_dom:-N/A}"
+    else
+        stls_label="未安装"
+        stls_port_disp="N/A"
+        stls_dom_disp="N/A"
+    fi
 
     # 5 行紧凑状态栏
     printf '版本：%s   监听模式：%s   IPv4：%s   IPv6：%s\n' \
         "${SCRIPT_VERSION}" "${mode:-dual}" "${v4:-未检测}" "${v6:-未检测}"
     printf 'SS2022    ：%s / %s   端口：%s   模式：%s\n' \
-        "$([[ "${ss_inst}" == "true" ]] && echo 已安装 || echo 未安装)" \
-        "${ss_active}" "${ss_port:-N/A}" "${ss_mode:-N/A}"
-    if [[ "${stls_en}" == "true" ]]; then
+        "${ss_label}" "${ss_active}" "${ss_port_disp}" "${ss_mode_disp}"
+    if (( stls_enabled )); then
         printf 'ShadowTLS ：%s / %s   端口：%s   伪装：%s\n' \
-            "已启用" "${stls_active}" "${stls_port:-N/A}" "${stls_dom:-N/A}"
+            "已启用" "${stls_active}" "${stls_port_disp}" "${stls_dom_disp}"
     else
         printf 'ShadowTLS ：%s / %s   端口：%s\n' \
-            "$([[ "${stls_inst}" == "true" ]] && echo 已安装 || echo 未安装)" \
-            "${stls_active}" "${stls_port:-N/A}"
+            "${stls_label}" "${stls_active}" "${stls_port_disp}"
     fi
     printf '时间同步：%s   快捷命令：%s\n' "$(time_status_label)" "$(shortcut_status_label)"
 }
