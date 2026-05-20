@@ -1,19 +1,19 @@
 # ss2022-shadowtls-manager
 
-SS2022 + ShadowTLS v3 一体化管理脚本，适用于 Debian / Ubuntu。
+SS2022 + ShadowTLS v3 一体化管理脚本，适用于 Debian / Ubuntu / CentOS 9 系列。
 
 ## 当前状态
 
-- 当前版本：**v0.2.0-beta**
-- 状态：**公开测试版（beta）**
-- v0.2.0-beta 是第一个公开 beta 版本，建议先在干净 Debian/Ubuntu 测试后再用于长期环境
+- 当前版本：**v1.0.0**
+- 状态：**稳定版**
+- 已在 Debian / Ubuntu / CentOS 9 上经过实测；仍建议先在干净 Debian / Ubuntu / CentOS 测试后再用于长期环境
 
 ## 功能特点
 
 1. **一键安装 / 管理 Shadowsocks 2022**：基于 `shadowsocks-rust`，systemd 托管
 2. **可选启用 ShadowTLS v3**：基于 `ihciah/shadow-tls`，TCP 流伪装为 TLS 1.3 握手
 3. **自动创建 `ss2022` 快捷命令**：安装成功后自动写入 `/usr/local/bin/ss2022`，并通过项目标记保护，绝不覆盖他人同名文件
-4. **安装/启用完成直接显示完整链接 + 终端二维码**：无需再去其它菜单
+4. **安装/启用完成直接显示完整链接 + 终端二维码**：默认只在终端显示，**不保存 PNG 文件**，无需再去其它菜单
 5. **支持 IPv4 / IPv6 / 双栈**：URI 自动加 `[ ]`、`[::]:port` 监听拼接精确
 6. **支持 sing-box / mihomo / Clash Meta / Shadowrocket / Surge 客户端配置输出**
 7. **支持时间同步检查和校准**：`systemd-timesyncd` 优先，可选 `chrony` 后备
@@ -31,9 +31,10 @@ SS2022 + ShadowTLS v3 一体化管理脚本，适用于 Debian / Ubuntu。
 
 - Debian 11 / 12
 - Ubuntu 20.04 / 22.04 / 24.04
+- CentOS / RHEL / Rocky / AlmaLinux 9 系列
 - 架构：amd64 / arm64
 
-> 主要在 Debian 12 测试，Ubuntu 支持仍需更多反馈；遇到问题请提 Issue 并附带 `lsb_release -a` 与 `journalctl -u ss2022 -n 80 --no-pager`。
+> v1.0.0 已在 Debian 12、Ubuntu 24.04、CentOS 9 上实测；其它发行版/版本组合可能仍有差异，遇到问题请提 Issue 并附带 `lsb_release -a` 或 `cat /etc/os-release`，以及 `journalctl -u ss2022 -n 80 --no-pager`。
 
 ## 一行安装
 
@@ -83,8 +84,8 @@ ss2022
 ## 主菜单
 
 ```
-SS2022 + ShadowTLS 管理脚本 v0.2.0-beta
-版本：v0.2.0-beta   监听模式：dual   IPv4：x.x.x.x   IPv6：xxxx::xxxx
+SS2022 + ShadowTLS 管理脚本 v1.0.0
+版本：v1.0.0   监听模式：dual   IPv4：x.x.x.x   IPv6：xxxx::xxxx
 SS2022    ：已安装 / 运行中   端口：18388   模式：tcp_only
 ShadowTLS ：已启用 / 运行中   端口：8443    伪装：www.bing.com
 时间同步：已同步   快捷命令：ss2022
@@ -158,9 +159,10 @@ ShadowTLS ：已启用 / 运行中   端口：8443    伪装：www.bing.com
 
 ## 版本规划
 
-- **v0.1.x-alpha**：内部测试 + 公开测试，仍可能有 breaking 修改
-- **v0.2.x**：第一个 beta release，配套 `install.sh` 一行安装（本仓库已有）
-- **v1.0.0**：稳定版
+- **v0.1.x-alpha**：内部测试 + 公开测试
+- **v0.2.x-beta**：第一个 beta release，配套 `install.sh` 一行安装
+- **v1.0.0**（当前）：稳定版，已在 Debian / Ubuntu / CentOS 9 上实测；一行安装自动建快捷命令、依赖安装多发行版超时、时间显示明确解释 UTC 偏移、一键完整卸载默认不备份、BBR 状态友好化
+- **v1.0.x**：仅修复缺陷，不引入 breaking change
 
 ## 贡献 / 反馈
 

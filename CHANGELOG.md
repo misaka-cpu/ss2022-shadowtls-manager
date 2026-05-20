@@ -8,6 +8,25 @@
 
 （暂无）
 
+## [v1.0.0] — 第一个稳定版
+
+### Added
+- **一行安装后自动创建 `ss2022` 快捷命令**：`install.sh` 在主脚本就位后写入 `/usr/local/bin/ss2022` wrapper（带 `managed by ss2022-shadowtls-manager` 标记）；已存在但非本项目的同名文件**绝不覆盖**，明确提示用户手动处理
+- **CentOS / RHEL / Rocky / AlmaLinux 9** 支持：`detect_os` 增加 `OS_FAMILY=rhel` 分支；`install_dependencies` / `install_pkg` 支持 `apt-get` / `dnf` / `yum` 自动切换；包名按发行版差异自动映射（`xz-utils ↔ xz`、`dnsutils ↔ bind-utils`、`iproute2 ↔ iproute`）
+- 依赖安装全程**带超时**：索引更新 `timeout 120s`，包安装 `timeout 180s`；超时与失败都给清晰提示，不再无限卡住
+- 时间状态显示新增「时区偏移」（`UTC+8` / `UTC+5:30` 等可读格式）与「时间同步状态」（正常 / 未同步 / 未检测），并明确解释 "本地时间与 UTC 时间按时区换算，存在时区偏移是正常现象"
+- `sync_time_auto` 改为按发行版自动选择 NTP 守护：Debian/Ubuntu 优先 `systemd-timesyncd`，RHEL/CentOS 9 优先 `chronyd`；chrony 安装走统一 `install_pkg`，支持 apt/dnf/yum
+
+### Fixed
+- **一键完整卸载默认不再备份**：按设计直接删除本项目配置，YES 确认前明确警示 "此操作不可逆"；总结改为 "未备份：一键完整卸载按设计直接删除本项目配置。如需保留配置，请使用单独停用/卸载功能"。`uninstall_ss2022` / `uninstall_shadowtls` 单独卸载流程仍自动备份
+- **BBR / sysctl 状态友好化**：不再显示 "（不存在）" 误导文案；按 "已启用 / 持久化配置：本项目 / 系统已有 / 未创建" 三态区分；系统已是 bbr+fq 但本项目 sysctl 文件不存在时明确说明 "当前系统已经启用 BBR，不需要重复写入本项目 sysctl 文件"
+- 主菜单"一键安装 / 重装"卡在"更新软件包索引"：增加 120 秒超时和"软件源响应过慢"明确提示，并继续尝试用已有索引安装
+
+### Changed
+- 版本号从 `v0.2.0-beta` 升级到 `v1.0.0`；README / CHANGELOG / TESTING / 状态栏 / 主菜单标题全部同步
+- 支持系统列表新增 CentOS / RHEL / Rocky / AlmaLinux 9 系列
+- 保持 nftables 安全边界不变：不 `flush ruleset`、不 `nft -f`、不覆盖现有规则、不动 `/etc/nftables.conf`、不修改 `nftables-nat-rust-enhanced` 项目
+
 ## [v0.2.0-beta] — 第一个公开 beta
 
 ### Fixed

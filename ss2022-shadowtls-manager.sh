@@ -18,10 +18,10 @@ umask 077
 # 常量与路径定义（仅允许操作以下路径）
 # -----------------------------------------------------------------------------
 # 项目唯一版本常量；远程升级时从该常量提取版本号
-readonly MANAGER_VERSION="v0.2.0-beta"
+readonly MANAGER_VERSION="v1.0.0"
 # 别名：兼容仍在 v0.1.5 及更早版本的客户端进行远程版本探测（它们 grep SCRIPT_VERSION）
 # 必须使用字面量字符串而非 "${MANAGER_VERSION}"，否则旧版客户端 grep + sed 提取到的是字面 ${MANAGER_VERSION}
-readonly SCRIPT_VERSION="v0.2.0-beta"
+readonly SCRIPT_VERSION="v1.0.0"
 
 # 菜单返回码约定（v0.1.5）：
 #   - 普通返回（默认 0 / 非 10）：调用方按既有规则处理 press_any_key
@@ -127,6 +127,8 @@ check_root() {
 # 检测发行版
 OS_ID=""
 OS_VERSION=""
+# OS_FAMILY: debian | rhel ；决定包管理器与软件包命名
+OS_FAMILY=""
 detect_os() {
     if [[ ! -r /etc/os-release ]]; then
         log_error "无法读取 /etc/os-release，无法识别系统"
@@ -138,20 +140,29 @@ detect_os() {
     OS_VERSION="${VERSION_ID:-unknown}"
     case "${OS_ID}" in
         debian)
+            OS_FAMILY="debian"
             case "${OS_VERSION}" in
                 11|12) : ;;
                 *) log_warn "Debian ${OS_VERSION} 不在官方测试列表 (11/12)，仍尝试继续" ;;
             esac
             ;;
         ubuntu)
+            OS_FAMILY="debian"
             case "${OS_VERSION}" in
                 20.04|22.04|24.04) : ;;
                 *) log_warn "Ubuntu ${OS_VERSION} 不在官方测试列表 (20.04/22.04/24.04)，仍尝试继续" ;;
             esac
             ;;
+        centos|rhel|rocky|almalinux|ol)
+            OS_FAMILY="rhel"
+            case "${OS_VERSION%%.*}" in
+                9|10) : ;;
+                *) log_warn "${OS_ID} ${OS_VERSION} 不在官方测试列表 (9/10)，仍尝试继续" ;;
+            esac
+            ;;
         *)
             log_error "暂不支持当前系统：${OS_ID} ${OS_VERSION}"
-            suggest "本脚本仅适配 Debian 11/12 与 Ubuntu 20.04/22.04/24.04"
+            suggest "本脚本目前适配 Debian 11/12、Ubuntu 20.04/22.04/24.04、CentOS/RHEL 9 系列"
             exit 1
             ;;
     esac
@@ -181,49 +192,148 @@ detect_arch() {
 }
 
 # -----------------------------------------------------------------------------
-# 依赖安装
+# 依赖安装：支持 apt-get（Debian/Ubuntu）、dnf / yum（RHEL 系）
+#   - 自动检测包管理器
+#   - 更新索引 timeout 120s；安装包 timeout 180s
+#   - 索引更新失败不致命，会继续尝试用已有索引安装
+#   - 包名按发行版差异自动映射：xz-utils↔xz、dnsutils↔bind-utils、iproute2↔iproute
 # -----------------------------------------------------------------------------
-ensure_apt_updated=0
-apt_update_once() {
-    if [[ "${ensure_apt_updated}" -eq 0 ]]; then
-        log_info "更新软件包索引..."
-        DEBIAN_FRONTEND=noninteractive apt-get update -y >/dev/null 2>&1 || {
-            log_warn "apt-get update 失败，继续尝试安装"
-        }
-        ensure_apt_updated=1
+
+# 当前包管理器：apt-get | dnf | yum | ""
+_PKG_MGR=""
+_pkg_mgr_detect() {
+    if [[ -n "${_PKG_MGR}" ]]; then return 0; fi
+    if command -v apt-get >/dev/null 2>&1; then _PKG_MGR="apt-get"; return 0; fi
+    if command -v dnf     >/dev/null 2>&1; then _PKG_MGR="dnf";     return 0; fi
+    if command -v yum     >/dev/null 2>&1; then _PKG_MGR="yum";     return 0; fi
+    _PKG_MGR=""
+    return 1
+}
+
+# 把命令名/Debian 包名映射到当前发行版的真实包名。返回 stdout 是包名（空 = 不需要安装）。
+# 用法：_pkg_name_for_distro <command-or-debname>
+_pkg_name_for_distro() {
+    local key="$1"
+    case "${OS_FAMILY}:${key}" in
+        debian:xz-utils)         echo "xz-utils" ;;
+        rhel:xz-utils|rhel:xz)   echo "xz" ;;
+        debian:dnsutils)         echo "dnsutils" ;;
+        rhel:dnsutils|rhel:bind-utils) echo "bind-utils" ;;
+        debian:iproute2)         echo "iproute2" ;;
+        rhel:iproute2|rhel:iproute) echo "iproute" ;;
+        *) echo "${key}" ;;
+    esac
+}
+
+# 命令是否可用（封装），避免 grep / which 差异
+_have_cmd() { command -v "$1" >/dev/null 2>&1; }
+
+# 带超时的 shell 命令；timeout 不可用时退化为普通调用
+_run_with_timeout() {
+    local secs="$1"; shift
+    if _have_cmd timeout; then
+        timeout "${secs}" "$@"
+    else
+        "$@"
     fi
 }
 
-install_pkg() {
-    local pkg="$1"
-    if command -v "${pkg}" >/dev/null 2>&1; then
-        return 0
+# 仅执行一次的索引更新
+_PKG_INDEX_UPDATED=0
+pkg_update_index_once() {
+    [[ "${_PKG_INDEX_UPDATED}" -eq 1 ]] && return 0
+    _pkg_mgr_detect || { log_warn "未检测到 apt-get / dnf / yum，跳过索引更新"; _PKG_INDEX_UPDATED=1; return 0; }
+    log_info "正在更新软件包索引（最多等待 120 秒）..."
+    local rc=0
+    case "${_PKG_MGR}" in
+        apt-get) DEBIAN_FRONTEND=noninteractive _run_with_timeout 120 apt-get update -y >/dev/null 2>&1 || rc=$? ;;
+        dnf)     _run_with_timeout 120 dnf  makecache -y >/dev/null 2>&1 || rc=$? ;;
+        yum)     _run_with_timeout 120 yum  makecache    >/dev/null 2>&1 || rc=$? ;;
+    esac
+    if [[ ${rc} -eq 124 ]]; then
+        log_warn "软件源响应过慢（120s 超时），可能是网络、DNS、IPv6 或镜像源问题。继续使用已有索引。"
+    elif [[ ${rc} -ne 0 ]]; then
+        log_warn "软件源索引更新失败（rc=${rc}），继续尝试安装已有索引中的依赖。"
     fi
-    apt_update_once
-    log_info "安装依赖：${pkg}"
-    DEBIAN_FRONTEND=noninteractive apt-get install -y "${pkg}" >/dev/null 2>&1 || {
-        log_warn "安装 ${pkg} 失败"
-        return 1
-    }
+    _PKG_INDEX_UPDATED=1
+    return 0
+}
+
+# 安装一个包（命令或 Debian 包名），带 180 秒超时
+# 返回 0 成功 / 124 超时 / 其它 = 失败
+install_pkg() {
+    local pkg="$1" real_pkg rc=0
+    real_pkg="$(_pkg_name_for_distro "${pkg}")"
+    [[ -z "${real_pkg}" ]] && return 0
+    # 已存在同名命令则跳过（覆盖 xz/iproute2/dnsutils 等"命令即包"语义）
+    if _have_cmd "${pkg%% *}"; then return 0; fi
+    _pkg_mgr_detect || { log_warn "未检测到包管理器，无法安装 ${real_pkg}"; return 1; }
+    log_info "正在安装依赖：${real_pkg}（最多等待 180 秒）..."
+    case "${_PKG_MGR}" in
+        apt-get) DEBIAN_FRONTEND=noninteractive _run_with_timeout 180 apt-get install -y "${real_pkg}" >/dev/null 2>&1 || rc=$? ;;
+        dnf)     _run_with_timeout 180 dnf install -y "${real_pkg}" >/dev/null 2>&1 || rc=$? ;;
+        yum)     _run_with_timeout 180 yum install -y "${real_pkg}" >/dev/null 2>&1 || rc=$? ;;
+    esac
+    return ${rc}
 }
 
 install_dependencies() {
     log_step "检查并安装基础依赖"
-    local pkg
+    if ! _pkg_mgr_detect; then
+        log_warn "未检测到 apt-get / dnf / yum；如缺少基础工具请手动安装："
+        log_warn "  Debian/Ubuntu: apt install -y curl wget tar jq openssl ca-certificates xz-utils iproute2 dnsutils"
+        log_warn "  RHEL/CentOS  : dnf install -y curl wget tar jq openssl ca-certificates xz iproute bind-utils"
+        return 0
+    fi
+    log_info "包管理器：${_PKG_MGR}（OS 家族：${OS_FAMILY}）"
+
+    # 先尝试索引更新（失败仅警告，继续）
+    pkg_update_index_once
+
+    # 必备依赖（按 Debian 包名传入；_pkg_name_for_distro 内部映射）
+    local missing=()
+    local failed=()
+    local pkg rc
     for pkg in curl wget tar jq openssl ca-certificates xz-utils iproute2 dnsutils; do
-        if ! command -v "${pkg%% *}" >/dev/null 2>&1; then
-            apt_update_once
-            log_info "安装：${pkg}"
-            DEBIAN_FRONTEND=noninteractive apt-get install -y "${pkg}" >/dev/null 2>&1 || \
-                log_warn "依赖 ${pkg} 安装失败，可能影响部分功能"
+        # 命令名即包名的快速跳过
+        if _have_cmd "${pkg%-*}" || _have_cmd "${pkg}" \
+            || { [[ "${pkg}" == xz-utils ]] && _have_cmd xz; } \
+            || { [[ "${pkg}" == dnsutils  ]] && _have_cmd dig; } \
+            || { [[ "${pkg}" == iproute2  ]] && _have_cmd ip; } \
+            || { [[ "${pkg}" == ca-certificates ]] && [[ -d /etc/ssl/certs ]]; }; then
+            continue
         fi
+        missing+=("${pkg}")
     done
+    if (( ${#missing[@]} == 0 )); then
+        log_ok "基础依赖已齐全"
+    else
+        for pkg in "${missing[@]}"; do
+            rc=0
+            install_pkg "${pkg}" || rc=$?
+            case "${rc}" in
+                0)   log_ok "已安装：$(_pkg_name_for_distro "${pkg}")" ;;
+                124) log_warn "安装 ${pkg} 超时（180s）"; failed+=("${pkg}（超时）") ;;
+                *)   log_warn "安装 ${pkg} 失败（rc=${rc}），可能影响部分功能"
+                     failed+=("${pkg}（rc=${rc}）") ;;
+            esac
+        done
+    fi
+
     # qrencode 可选
-    if ! command -v qrencode >/dev/null 2>&1; then
-        apt_update_once
-        log_info "尝试安装 qrencode（可选）"
-        DEBIAN_FRONTEND=noninteractive apt-get install -y qrencode >/dev/null 2>&1 || \
-            log_warn "qrencode 安装失败，二维码生成功能将不可用，主服务不受影响"
+    if ! _have_cmd qrencode; then
+        log_info "尝试安装 qrencode（可选；缺失只影响二维码功能）"
+        if install_pkg qrencode; then
+            log_ok "已安装：qrencode"
+        else
+            log_warn "qrencode 安装失败，二维码生成功能将不可用；主服务不受影响"
+        fi
+    fi
+
+    if (( ${#failed[@]} > 0 )); then
+        log_warn "以下依赖未能安装："
+        printf '  - %s\n' "${failed[@]}"
+        log_warn "请检查软件源是否可用，或手动安装上述包"
     fi
     log_ok "依赖检查完成"
 }
@@ -1578,10 +1688,13 @@ uninstall_all() {
   - nftables-nat-rust-enhanced 项目
   - /usr/local/sbin/ 下非本项目文件
   - 其它代理程序
-  - 已安装的 apt 包（curl / jq / qrencode / chrony / wget 等）
+  - 已安装的 apt / dnf / yum 包（curl / jq / qrencode / chrony / wget 等）
   - 防火墙的 ufw / firewalld 端口规则（请按需自行清理）
 
-卸载前会将所有现存配置备份到 /root/ss2022-shadowtls-backup-<日期>/
+${C_YELLOW}一键完整卸载将直接删除本项目配置和服务文件，不再备份。请确认你已经保存好节点信息。${C_RESET}
+${C_RED}此操作不可逆。${C_RESET}
+如需保留配置或后续可恢复，请改用「启用 / 配置 ShadowTLS → 卸载 ShadowTLS」或「高级设置 → 修改 SS2022 → 卸载 SS2022（单独）」——
+这两个单独卸载会自动备份配置。
 EOF
     read -r -p "请输入 YES 确认完整卸载： " ans
     [[ "${ans}" == "YES" ]] || { log_info "已取消"; return; }
@@ -1593,27 +1706,9 @@ EOF
     pre_stls_port="$(info_get '.shadowtls.port')"
     pre_ss_mode="$(info_get '.ss2022.mode')"
 
-    # 1) 备份
-    local ts backup_dir
-    ts="$(date +%Y%m%d-%H%M%S)"
-    backup_dir="/root/ss2022-shadowtls-backup-${ts}"
-    if mkdir -p "${backup_dir}" 2>/dev/null; then
-        chmod 700 "${backup_dir}" 2>/dev/null || true
-        local src
-        for src in "${SS_CONFIG}" "${STLS_ENV}" "${SS_SERVICE}" "${STLS_SERVICE}" "${PROJECT_INFO}"; do
-            [[ -f "${src}" ]] && cp -a -- "${src}" "${backup_dir}/" 2>/dev/null && \
-                log_info "已备份：${src}"
-        done
-        if [[ -d "${PROJECT_BACKUP_DIR}" ]]; then
-            cp -a -- "${PROJECT_BACKUP_DIR}" "${backup_dir}/" 2>/dev/null && \
-                log_info "已备份：${PROJECT_BACKUP_DIR}"
-        fi
-        log_ok "备份完成：${backup_dir}"
-    else
-        log_warn "创建备份目录失败：${backup_dir}（继续卸载）"
-    fi
+    # v1.0.0：一键完整卸载按设计不再备份，直接进入清理流程
 
-    # 2) 严格停服 + 清理残留进程（disable --now → reset-failed → TERM → KILL）
+    # 1) 严格停服 + 清理残留进程（disable --now → reset-failed → TERM → KILL）
     stop_project_services_strict
 
     local services_state_ss services_state_stls
@@ -1740,10 +1835,10 @@ EOF
 - SS2022 本机端口 ${pre_ss_local_port:-未配置}/tcp  ：${port_state_ss_local}
 - ShadowTLS 端口  ${pre_stls_port:-未配置}/tcp     ：${port_state_stls}
 
-备份目录：${backup_dir}
+未备份：一键完整卸载按设计直接删除本项目配置。如需保留配置，请使用「启用 / 配置 ShadowTLS → 卸载 ShadowTLS」或「高级设置 → 修改 SS2022 → 卸载 SS2022（单独）」单独卸载。
 
 说明：
-- 时间同步是系统级状态（systemd-timesyncd / chrony），与本项目无关；状态栏继续显示「已同步」属于正常。
+- 时间同步是系统级状态（systemd-timesyncd / chronyd），与本项目无关；状态栏继续显示「已同步」属于正常。
 - 本脚本不会删除 nftables 规则与 /etc/nftables.conf；nftables-nat-rust-enhanced 项目未触碰。
 - ufw / firewalld 端口放行规则未自动清理，可按需手动 ufw delete / firewall-cmd --remove-port。
 - sysctl BBR 配置文件 ${SYSCTL_CONF}（若曾启用）仍保留，可手动删除后 sysctl --system。
@@ -2615,22 +2710,50 @@ show_udp_mode() {
     fi
 }
 
-enable_bbr() {
-    log_step "BBR / 系统优化"
+# 计算 BBR 持久化配置的来源：
+#   project   - 本项目写入的 SYSCTL_CONF 存在
+#   system    - 系统当前已 bbr+fq 但本项目文件不存在（来自内核默认 / 其它配置文件）
+#   none      - 未启用，且本项目文件不存在
+_bbr_persistence_source() {
     local cc qd
     cc="$(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null || echo unknown)"
     qd="$(sysctl -n net.core.default_qdisc 2>/dev/null || echo unknown)"
+    if [[ -f "${SYSCTL_CONF}" ]]; then
+        echo "project"
+    elif [[ "${cc}" == "bbr" && "${qd}" == "fq" ]]; then
+        echo "system"
+    else
+        echo "none"
+    fi
+}
+
+enable_bbr() {
+    log_step "BBR / 系统优化"
+    local cc qd src
+    cc="$(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null || echo unknown)"
+    qd="$(sysctl -n net.core.default_qdisc 2>/dev/null || echo unknown)"
+    src="$(_bbr_persistence_source)"
     echo "当前 tcp_congestion_control: ${cc}"
     echo "当前 default_qdisc        : ${qd}"
-    if [[ -f "${SYSCTL_CONF}" ]]; then
-        echo "已存在 sysctl 配置文件：${SYSCTL_CONF}"
-    fi
+
     if [[ "${cc}" == "bbr" && "${qd}" == "fq" ]]; then
         log_ok "BBR 已启用，无需重复设置。"
-        return
+        case "${src}" in
+            project)
+                echo "持久化配置：本项目（${SYSCTL_CONF}）"
+                ;;
+            system)
+                echo "持久化配置：非本项目管理 / 系统已有配置"
+                echo "说明：当前系统已经启用 BBR，不需要重复写入本项目 sysctl 文件。"
+                read -r -p "是否仍然写入本项目 sysctl 文件以接管持久化? [y/N]: " a
+                [[ "${a}" =~ ^[Yy]$ ]] || return 0
+                ;;
+        esac
+    else
+        read -r -p "是否启用 BBR? [y/N]: " a
+        [[ "${a}" =~ ^[Yy]$ ]] || { log_info "已取消"; return; }
     fi
-    read -r -p "是否启用 BBR? [y/N]: " a
-    [[ "${a}" =~ ^[Yy]$ ]] || { log_info "已取消"; return; }
+
     backup_config "${SYSCTL_CONF}"
     cat > "${SYSCTL_CONF}" <<EOF
 # Managed by ${SCRIPT_NAME}
@@ -2651,9 +2774,10 @@ EOF
 }
 
 show_sys_opt() {
-    local cc qd
+    local cc qd src
     cc="$(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null)"
     qd="$(sysctl -n net.core.default_qdisc 2>/dev/null)"
+    src="$(_bbr_persistence_source)"
     echo "tcp_congestion_control: ${cc:-未知}"
     echo "default_qdisc         : ${qd:-未知}"
     if [[ "${cc}" == "bbr" && "${qd}" == "fq" ]]; then
@@ -2661,13 +2785,22 @@ show_sys_opt() {
     else
         echo "BBR 状态             : 未启用"
     fi
+    case "${src}" in
+        project)
+            echo "持久化配置           : 本项目"
+            echo "                       ${SYSCTL_CONF}"
+            ;;
+        system)
+            echo "持久化配置           : 非本项目管理 / 系统已有配置"
+            echo "                       (当前系统已 bbr + fq，不需要重复写本项目 sysctl 文件)"
+            ;;
+        none)
+            echo "持久化配置           : 未创建"
+            echo "                       (选择「启用 BBR」后，本脚本会创建 ${SYSCTL_CONF})"
+            ;;
+    esac
     echo "ipv6 bindv6only       : $(cat /proc/sys/net/ipv6/bindv6only 2>/dev/null)"
     echo "fs.file-max           : $(sysctl -n fs.file-max 2>/dev/null)"
-    if [[ -f "${SYSCTL_CONF}" ]]; then
-        echo "本项目 sysctl 文件    : ${SYSCTL_CONF}（已存在）"
-    else
-        echo "本项目 sysctl 文件    : ${SYSCTL_CONF}（不存在）"
-    fi
 }
 
 # -----------------------------------------------------------------------------
@@ -2711,36 +2844,95 @@ _current_timezone() {
     fi
 }
 
+# 把 "+0800" 这样的 +%z 格式化为 "UTC+8" / "UTC+5:30" 之类的人类可读偏移
+_human_tz_offset() {
+    local off h m sign
+    off="$(date +%z 2>/dev/null)"
+    [[ -z "${off}" ]] && { echo ""; return; }
+    sign="${off:0:1}"
+    h=$((10#${off:1:2}))
+    m=$((10#${off:3:2}))
+    if (( m == 0 )); then
+        printf 'UTC%s%d' "${sign}" "${h}"
+    else
+        printf 'UTC%s%d:%02d' "${sign}" "${h}" "${m}"
+    fi
+}
+
+# NTP 守护服务的运行状态（按发行版差异自动选择 systemd-timesyncd / chronyd / chrony）
+# 输出格式："服务名=状态" 或空
+_ntp_service_state() {
+    local unit candidates=(systemd-timesyncd chronyd chrony)
+    for unit in "${candidates[@]}"; do
+        if systemctl list-unit-files 2>/dev/null | grep -q "^${unit}\.service"; then
+            local s
+            s="$(systemctl is-active "${unit}" 2>/dev/null || echo unknown)"
+            printf '%s=%s' "${unit}" "${s}"
+            return 0
+        fi
+    done
+    echo ""
+}
+
 show_time_status() {
     log_step "系统时间与时区"
-    echo "  本地时间：$(date '+%Y-%m-%d %H:%M:%S %Z')"
-    echo "  UTC 时间：$(date -u '+%Y-%m-%d %H:%M:%S UTC')"
-    if command -v timedatectl >/dev/null 2>&1; then
-        local tz ntp synced rtc_local
-        tz="$(timedatectl show -p Timezone           --value 2>/dev/null)"
-        ntp="$(timedatectl show -p NTP               --value 2>/dev/null)"
-        synced="$(timedatectl show -p NTPSynchronized --value 2>/dev/null)"
-        rtc_local="$(timedatectl show -p LocalRTC    --value 2>/dev/null)"
-        echo "  当前时区：${tz:-未知}"
-        echo "  NTP 启用：${ntp:-未知}"
-        echo "  System clock synchronized：${synced:-未知}"
-        echo "  RTC in local TZ：${rtc_local:-未知}"
-        # systemd-timesyncd 服务状态（如可用）
-        if systemctl list-unit-files 2>/dev/null | grep -q '^systemd-timesyncd\.service'; then
-            local svc
-            svc="$(systemctl is-active systemd-timesyncd 2>/dev/null)"
-            echo "  systemd-timesyncd：${svc}"
-        elif command -v chronyc >/dev/null 2>&1; then
-            local cs
-            cs="$(systemctl is-active chrony 2>/dev/null || systemctl is-active chronyd 2>/dev/null)"
-            echo "  chrony：${cs:-未运行}"
-        fi
-        echo
-        echo "--- timedatectl status 输出 ---"
-        timedatectl status 2>/dev/null || true
-    else
+    echo "  本地时间  ：$(date '+%Y-%m-%d %H:%M:%S %Z')"
+    echo "  UTC 时间  ：$(date -u '+%Y-%m-%d %H:%M:%S UTC')"
+    echo "  时区偏移  ：$(_human_tz_offset)"
+    echo
+    echo "  说明：本地时间和 UTC 时间按时区换算，存在时区偏移是正常现象。"
+    echo "        判断是否同步请看下方 'System clock synchronized'、'NTP service'。"
+    echo
+
+    if ! command -v timedatectl >/dev/null 2>&1; then
         log_warn "timedatectl 不可用"
+        return
     fi
+
+    local tz ntp synced rtc_local sync_label
+    tz="$(timedatectl show -p Timezone           --value 2>/dev/null)"
+    ntp="$(timedatectl show -p NTP               --value 2>/dev/null)"
+    synced="$(timedatectl show -p NTPSynchronized --value 2>/dev/null)"
+    rtc_local="$(timedatectl show -p LocalRTC    --value 2>/dev/null)"
+    case "${synced}" in
+        yes) sync_label="${C_GREEN}正常${C_RESET}" ;;
+        no)  sync_label="${C_YELLOW}未同步${C_RESET}" ;;
+        *)   sync_label="${C_YELLOW}未检测${C_RESET}" ;;
+    esac
+    echo "  当前时区               ：${tz:-未知}"
+    echo "  NTP 启用 (NTP)         ：${ntp:-未知}"
+    echo "  System clock synchronized：${synced:-未知}"
+    echo "  时间同步状态           ：${sync_label}"
+    echo "  RTC in local TZ        ：${rtc_local:-未知}"
+    local svc_state
+    svc_state="$(_ntp_service_state)"
+    if [[ -n "${svc_state}" ]]; then
+        echo "  NTP service            ：${svc_state%%=*} (${svc_state##*=})"
+    else
+        echo "  NTP service            ：未检测到 systemd-timesyncd / chronyd"
+    fi
+    echo
+    echo "--- timedatectl status 原始输出 ---"
+    timedatectl status 2>/dev/null || true
+}
+
+# 检测系统当前 NTP 守护进程 unit 名（按优先级首选可用者）；返回空 = 未发现
+# Debian/Ubuntu 默认优先 systemd-timesyncd；RHEL 系优先 chronyd
+_preferred_ntp_unit() {
+    local prefer_order
+    if [[ "${OS_FAMILY}" == "rhel" ]]; then
+        prefer_order=(chronyd chrony systemd-timesyncd)
+    else
+        prefer_order=(systemd-timesyncd chronyd chrony)
+    fi
+    local unit
+    for unit in "${prefer_order[@]}"; do
+        if systemctl list-unit-files 2>/dev/null | grep -q "^${unit}\.service"; then
+            echo "${unit}"
+            return 0
+        fi
+    done
+    echo ""
 }
 
 sync_time_auto() {
@@ -2750,6 +2942,7 @@ sync_time_auto() {
         suggest "可手动选择安装 chrony 进行时间同步"
         return 1
     fi
+
     # 执行前快照
     local before_state before_ntp before_synced
     before_state="$(check_time_status)"
@@ -2757,42 +2950,39 @@ sync_time_auto() {
     before_synced="$(timedatectl show -p NTPSynchronized --value 2>/dev/null)"
     echo "执行前：NTP=${before_ntp:-未知} / synchronized=${before_synced:-未知} / 本地时间=$(date '+%Y-%m-%d %H:%M:%S %Z')"
 
-    # 优先 systemd-timesyncd
-    local tried_systemd=0
-    if systemctl list-unit-files 2>/dev/null | grep -q '^systemd-timesyncd\.service'; then
-        tried_systemd=1
-        log_info "尝试启用 NTP（systemd-timesyncd）..."
+    # 选择本机可用的 NTP 守护
+    local unit
+    unit="$(_preferred_ntp_unit)"
+    if [[ -n "${unit}" ]]; then
+        log_info "使用 NTP 服务：${unit}"
         timedatectl set-ntp true 2>/dev/null || log_warn "timedatectl set-ntp 失败"
-        if ! systemctl restart systemd-timesyncd 2>/dev/null; then
-            log_warn "重启 systemd-timesyncd 失败"
+        if ! systemctl restart "${unit}" 2>/dev/null; then
+            log_warn "重启 ${unit} 失败"
         fi
         sleep 1
     else
-        log_info "未检测到 systemd-timesyncd 服务单元"
+        log_info "未检测到 systemd-timesyncd / chronyd / chrony 任何一个 service unit"
     fi
 
-    # 如未同步成功，可选 chrony 后备
+    # 如未同步成功，可选 chrony 后备（多发行版）
     case "$(check_time_status)" in
         synced) : ;;
         *)
-            if (( tried_systemd )); then
-                log_warn "通过 systemd-timesyncd 后仍未确认同步"
+            if [[ -n "${unit}" ]]; then
+                log_warn "通过 ${unit} 后仍未确认同步"
             fi
             read -r -p "是否安装 chrony 作为时间同步后备? [y/N]: " a
             if [[ "${a}" =~ ^[Yy]$ ]]; then
-                if ! command -v apt-get >/dev/null 2>&1; then
-                    log_error "未找到 apt-get，无法自动安装 chrony"
+                # 用 install_pkg 统一处理（自动选 apt-get / dnf / yum，带超时）
+                if install_pkg chrony; then
+                    # chrony 在 Debian/Ubuntu 服务名常为 chrony；在 RHEL 系常为 chronyd
+                    systemctl enable --now chronyd >/dev/null 2>&1 \
+                      || systemctl enable --now chrony >/dev/null 2>&1 \
+                      || true
+                    sleep 1
+                    command -v chronyc >/dev/null 2>&1 && chronyc tracking 2>/dev/null || true
                 else
-                    DEBIAN_FRONTEND=noninteractive apt-get update -y >/dev/null 2>&1 || log_warn "apt-get update 失败"
-                    if DEBIAN_FRONTEND=noninteractive apt-get install -y chrony >/dev/null 2>&1; then
-                        systemctl enable --now chrony  >/dev/null 2>&1 \
-                          || systemctl enable --now chronyd >/dev/null 2>&1 \
-                          || true
-                        sleep 1
-                        command -v chronyc >/dev/null 2>&1 && chronyc tracking 2>/dev/null || true
-                    else
-                        log_error "chrony 安装失败"
-                    fi
+                    log_error "chrony 安装失败"
                 fi
             else
                 log_info "已跳过 chrony 安装"
@@ -2808,7 +2998,8 @@ sync_time_auto() {
     echo "执行后：NTP=${after_ntp:-未知} / synchronized=${after_synced:-未知} / 本地时间=$(date '+%Y-%m-%d %H:%M:%S %Z')"
 
     if [[ "${before_state}" == "synced" && "${after_state}" == "synced" ]]; then
-        log_ok "系统时间本来已经同步，所以时间显示可能不会明显变化。"
+        log_ok "系统时间本来已经同步，本地时间显示可能不会明显变化。"
+        log_info "提示：本地时间与 UTC 不同是正常的，差值来自时区偏移（$(_human_tz_offset)）。"
         return 0
     fi
     case "${after_state}" in
@@ -2865,7 +3056,10 @@ set_timezone_interactive() {
     local after_tz
     after_tz="$(_current_timezone)"
     log_ok "时区已修改：${before_tz:-未知} -> ${after_tz:-${tz}}"
-    echo "  本地时间：$(date '+%Y-%m-%d %H:%M:%S %Z')"
+    echo "  本地时间  ：$(date '+%Y-%m-%d %H:%M:%S %Z')"
+    echo "  UTC 时间  ：$(date -u '+%Y-%m-%d %H:%M:%S UTC')"
+    echo "  时区偏移  ：$(_human_tz_offset)"
+    log_info "本地时间与 UTC 时间不同是正常的，差值来自时区偏移。"
 }
 
 set_time_manual() {
