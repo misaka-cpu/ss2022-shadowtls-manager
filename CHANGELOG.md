@@ -11,9 +11,20 @@
 - `CHANGELOG.md`：本变更记录文件
 - `TESTING.md`：发布前的手工测试清单
 - `.github/workflows/syntax.yml`：CI 仅做 `bash -n` 语法检查，不触发任何系统级安装
+- 版本常量统一为 `MANAGER_VERSION`；同时保留 `SCRIPT_VERSION` **字面量** 别名（同值字符串），让仍在 v0.1.5 及更早版本的客户端通过 `grep SCRIPT_VERSION + sed` 时仍能提取到真实版本号（**不能写成 `"${MANAGER_VERSION}"`**，否则旧版客户端会提取到字面 `${MANAGER_VERSION}`）
+- `get_manager_script_path`：识别"真正的主脚本路径"，即使脚本通过 `/usr/local/bin/ss2022` wrapper 启动也能解析出 wrapper 内 `exec` 目标
+- `sync_wrapper_to_target`：覆盖管理脚本后自动校正快捷命令 wrapper 的 `exec` 指向；非本项目创建的同名 wrapper 不动
+- `_extract_manager_version_from_file` / `_extract_wrapper_target`：版本号与 wrapper 目标解析 helper
+- 一键检查更新现在打印调试信息：当前运行路径、快捷命令路径、快捷命令指向、版本对比结果
+
+### Fixed
+- **一键检查更新写入了 wrapper 而非真实主脚本**：旧版 `update_manager_script` 用 `readlink -f "$BASH_SOURCE[0]"`，在某些组合（多副本、不同启动路径、symlink chain）下会写错文件，结果版本号显示不变。新版改用 `get_manager_script_path` 解析真实路径，并在覆盖后立刻 `bash -n` + 提取 `MANAGER_VERSION` 与远程版本核对；不一致则自动回滚到备份，并打印路径诊断信息（目标脚本路径 / 快捷命令路径 / wrapper 前 5 行）
+- 远程版本探测改为优先 `MANAGER_VERSION`、回退 `SCRIPT_VERSION`，向后兼容老格式
 
 ### Changed
 - README 重写为发布质量版本：突出 10 项卖点 + 安全边界 + 一行安装命令 + 常见问题表
+- 一键检查更新：管理脚本更新成功后**不再继续停留在旧进程里**。所有可用更新跑完后统一在 `check_and_update_all` 末尾询问 "是否立即重新启动新版管理菜单 [Y/n]"：Y → `exec "${target}"` 载入新版本菜单；N → `exit 0` 退出当前旧进程（旧文件已被新版本覆盖，继续运行会出现版本号不一致）
+- `update_manager_script` 不再就地 `exec` / `exit`，仅登记 `_MGR_UPDATE_TARGET` / `_MGR_UPDATE_VERSION`，让同一轮的 `ssserver` / `shadow-tls` / 快捷命令更新都能跑完后再统一重启
 
 ## [v0.1.6-alpha] — 实测 bug 修复
 

@@ -17,6 +17,10 @@ umask 077
 # -----------------------------------------------------------------------------
 # 常量与路径定义（仅允许操作以下路径）
 # -----------------------------------------------------------------------------
+# 项目唯一版本常量；远程升级时从该常量提取版本号
+readonly MANAGER_VERSION="v0.1.6-alpha"
+# 别名：兼容仍在 v0.1.5 及更早版本的客户端进行远程版本探测（它们 grep SCRIPT_VERSION）
+# 必须使用字面量字符串而非 "${MANAGER_VERSION}"，否则旧版客户端 grep + sed 提取到的是字面 ${MANAGER_VERSION}
 readonly SCRIPT_VERSION="v0.1.6-alpha"
 
 # 菜单返回码约定（v0.1.5）：
@@ -234,7 +238,7 @@ ensure_project_dirs() {
     if [[ ! -f "${PROJECT_INFO}" ]]; then
         cat > "${PROJECT_INFO}" <<EOF
 {
-  "version": "${SCRIPT_VERSION}",
+  "version": "${MANAGER_VERSION}",
   "ss2022": {
     "installed": false,
     "method": "2022-blake3-aes-128-gcm",
@@ -2973,40 +2977,150 @@ update_shadowtls() {
 # 一键检查更新（管理脚本 / shadowsocks-rust / shadow-tls / 快捷命令）
 # -----------------------------------------------------------------------------
 
-# 远端管理脚本版本探测：从 raw URL 抓首 100 行 grep SCRIPT_VERSION
+# 远端管理脚本版本探测：从 raw URL 抓首 100 行
+# 先查 MANAGER_VERSION（当前命名），未命中再查 SCRIPT_VERSION（v0.1.5 及更早）
 # 失败返回空串；不打 log_error（仅 log_info），让 check_and_update_all 做更友好的分流
 _fetch_remote_manager_version() {
     local body
     body="$(curl -fsSL --max-time 15 "${MANAGER_UPDATE_URL}" 2>/dev/null | head -n 100 || true)"
     [[ -z "${body}" ]] && return 1
-    # 取 readonly SCRIPT_VERSION="vX.Y.Z..." 中的版本号
     local ver
-    ver="$(echo "${body}" | grep -E '^readonly SCRIPT_VERSION=' | head -n 1 | sed -E 's/.*"(.*)".*/\1/')"
+    ver="$(echo "${body}" | grep -E '^readonly MANAGER_VERSION=' | head -n 1 | sed -E 's/.*"(.*)".*/\1/')"
+    [[ -z "${ver}" ]] && \
+        ver="$(echo "${body}" | grep -E '^readonly SCRIPT_VERSION=' | head -n 1 | sed -E 's/.*"(.*)".*/\1/')"
     [[ -z "${ver}" ]] && return 1
     printf '%s' "${ver}"
 }
 
+# 从本地脚本文件提取版本号（先 MANAGER_VERSION，回退 SCRIPT_VERSION）
+# 用法：_extract_manager_version_from_file <path>
+_extract_manager_version_from_file() {
+    local f="$1"
+    [[ -n "${f}" && -f "${f}" ]] || { echo ""; return 1; }
+    local ver
+    ver="$(grep -E '^readonly MANAGER_VERSION=' "${f}" | head -n 1 | sed -E 's/.*"(.*)".*/\1/')"
+    [[ -z "${ver}" ]] && \
+        ver="$(grep -E '^readonly SCRIPT_VERSION=' "${f}" | head -n 1 | sed -E 's/.*"(.*)".*/\1/')"
+    printf '%s' "${ver}"
+    [[ -n "${ver}" ]]
+}
+
+# 解析 wrapper 文件中 `exec "..."` 后的目标路径；失败返回空串
+_extract_wrapper_target() {
+    local f="$1"
+    [[ -n "${f}" && -f "${f}" ]] || { echo ""; return 1; }
+    grep -E '^exec ' "${f}" 2>/dev/null \
+      | head -n 1 \
+      | sed -E 's/^exec[[:space:]]+"([^"]+)".*/\1/'
+}
+
+# 识别"真正的主脚本路径"：
+#   - 如果 $BASH_SOURCE[0] 指向带本项目标记的 wrapper（/usr/local/bin/ss2022），
+#     从 wrapper 的 exec 行解析出主脚本路径并返回
+#   - 否则使用 readlink -f "$BASH_SOURCE[0]"
+#   - 最后回退到 /root/ss2022-shadowtls-manager.sh
+#   - 必须通过签名校验：文件包含 MANAGER_VERSION（或老式 SCRIPT_VERSION）声明
+#   - 校验失败返回非 0
+get_manager_script_path() {
+    local src wrapper_target
+    src="$(readlink -f -- "${BASH_SOURCE[0]}" 2>/dev/null)"
+
+    # 如果 src 指向带项目标记的 wrapper，挖出 wrapper 的 exec 目标
+    if [[ -n "${src}" && -f "${src}" && "${src}" == "${SHORTCUT_PATH}" ]] \
+        && grep -q "${SHORTCUT_MARKER}" "${src}" 2>/dev/null; then
+        wrapper_target="$(_extract_wrapper_target "${src}")"
+        if [[ -n "${wrapper_target}" && -f "${wrapper_target}" ]]; then
+            src="$(readlink -f -- "${wrapper_target}" 2>/dev/null || echo "${wrapper_target}")"
+        fi
+    fi
+
+    # 最终回退
+    if [[ -z "${src}" || ! -f "${src}" ]]; then
+        src="/root/ss2022-shadowtls-manager.sh"
+    fi
+
+    # 签名校验：必须含 MANAGER_VERSION（或老式 SCRIPT_VERSION）声明
+    if [[ ! -f "${src}" ]] || \
+       ! grep -qE '^readonly (MANAGER_VERSION|SCRIPT_VERSION)=' "${src}" 2>/dev/null; then
+        echo ""
+        return 1
+    fi
+
+    printf '%s' "${src}"
+    return 0
+}
+
+# 如果 wrapper 的 exec 目标与当前主脚本不一致，自动重写 wrapper；
+# 非本项目创建的同名文件不动
+sync_wrapper_to_target() {
+    local target="$1"
+    [[ -n "${target}" && -f "${target}" ]] || return 1
+
+    if [[ ! -f "${SHORTCUT_PATH}" ]]; then
+        log_info "快捷命令缺失（可在安装 SS2022 后自动创建）：${SHORTCUT_PATH}"
+        return 0
+    fi
+    if ! grep -q "${SHORTCUT_MARKER}" "${SHORTCUT_PATH}" 2>/dev/null; then
+        log_warn "${SHORTCUT_PATH} 存在但非本项目创建（缺少标记），跳过同步"
+        return 0
+    fi
+
+    local current_target
+    current_target="$(_extract_wrapper_target "${SHORTCUT_PATH}")"
+    if [[ "${current_target}" == "${target}" ]]; then
+        return 0
+    fi
+    log_warn "快捷命令 wrapper 指向 ${current_target:-未知}，与当前主脚本 ${target} 不一致，自动同步..."
+
+    local tmp
+    if ! tmp="$(mktemp -t ss2022-wrap.XXXXXX 2>/dev/null)" \
+            || [[ -z "${tmp}" || ! -f "${tmp}" ]]; then
+        log_error "创建临时文件失败，跳过 wrapper 同步"
+        return 1
+    fi
+    cat > "${tmp}" <<EOF
+#!/usr/bin/env bash
+# ${SHORTCUT_MARKER}
+exec "${target}" "\$@"
+EOF
+    if install -m 0755 "${tmp}" "${SHORTCUT_PATH}"; then
+        log_ok "快捷命令 wrapper 已同步：${SHORTCUT_PATH} → ${target}"
+    else
+        log_error "快捷命令 wrapper 同步失败"
+    fi
+    safe_remove_tmpfile "${tmp}"
+}
+
 # 下载并应用管理脚本更新；下载内容通过 bash -n 校验后才覆盖
 update_manager_script() {
+    # 1) 识别真实主脚本路径（即使通过 /usr/local/bin/ss2022 wrapper 启动也能正确解析）
     local target
-    target="$(readlink -f -- "${BASH_SOURCE[0]}" 2>/dev/null)"
+    target="$(get_manager_script_path)" || target=""
     if [[ -z "${target}" || ! -f "${target}" ]]; then
-        log_error "无法解析当前脚本真实路径，跳过管理脚本更新"
+        log_error "无法识别当前主脚本真实路径"
+        log_warn "请使用 curl 或 scp 手动同步管理脚本到 /root/ss2022-shadowtls-manager.sh 后重试"
         return 1
     fi
     log_step "更新管理脚本：${target}"
-    # 备份当前脚本
-    local ts backup_path
+
+    # 2) 备份当前脚本
+    local ts backup_path=""
     ts="$(date +%Y%m%d-%H%M%S)"
-    backup_path="${PROJECT_BACKUP_DIR}/$(basename "${target}").${ts}.bak"
-    if ! cp -a -- "${target}" "${backup_path}" 2>/dev/null; then
-        log_warn "备份当前脚本失败：${backup_path}（仍继续更新）"
+    if [[ -d "${PROJECT_BACKUP_DIR}" ]]; then
+        backup_path="${PROJECT_BACKUP_DIR}/$(basename "${target}").${ts}.bak"
     else
-        log_info "已备份当前脚本：${backup_path}"
+        backup_path="${target}.bak.${ts}"
     fi
-    # 下载到临时文件
+    if cp -a -- "${target}" "${backup_path}" 2>/dev/null; then
+        log_info "已备份当前脚本：${backup_path}"
+    else
+        log_warn "备份当前脚本失败：${backup_path}（仍继续更新，但回滚不可用）"
+        backup_path=""
+    fi
+
+    # 3) 下载远程脚本到临时文件
     local tmp
-    if ! tmp="$(mktemp -t ss2022-mgr.XXXXXX 2>/dev/null)" \
+    if ! tmp="$(mktemp -t ss2022-manager-update.XXXXXX 2>/dev/null)" \
             || [[ -z "${tmp}" || ! -f "${tmp}" ]]; then
         log_error "创建临时文件失败"
         return 1
@@ -3022,21 +3136,69 @@ update_manager_script() {
         log_error "远程脚本下载内容为空"
         return 1
     fi
-    # bash -n 校验
+
+    # 4) bash -n 校验
     if ! bash -n "${tmp}" 2>/dev/null; then
         safe_remove_tmpfile "${tmp}"
         log_error "远程脚本 bash -n 校验失败，拒绝覆盖"
         return 1
     fi
-    # 覆盖到目标
+
+    # 5) 提取远程版本号（必须存在；否则不允许覆盖）
+    local remote_ver
+    remote_ver="$(_extract_manager_version_from_file "${tmp}")"
+    if [[ -z "${remote_ver}" ]]; then
+        safe_remove_tmpfile "${tmp}"
+        log_error "无法从远程脚本提取 MANAGER_VERSION，拒绝覆盖"
+        return 1
+    fi
+    log_info "远程版本：${remote_ver}"
+
+    # 6) 覆盖到目标
     if ! install -m 0755 "${tmp}" "${target}"; then
         safe_remove_tmpfile "${tmp}"
         log_error "覆盖目标失败：${target}"
         return 1
     fi
     safe_remove_tmpfile "${tmp}"
-    log_ok "管理脚本已更新：${target}"
-    log_warn "请退出当前菜单并重新运行 ss2022 以加载新版本"
+
+    # 7) 覆盖后核验：bash -n + 版本号必须等于远程版本
+    if ! bash -n "${target}" 2>/dev/null; then
+        log_error "覆盖后 bash -n 失败；尝试回滚到备份"
+        if [[ -n "${backup_path}" && -f "${backup_path}" ]] && \
+           cp -af -- "${backup_path}" "${target}" 2>/dev/null; then
+            log_info "已回滚到：${backup_path}"
+        fi
+        return 1
+    fi
+    local installed_ver
+    installed_ver="$(_extract_manager_version_from_file "${target}")"
+    if [[ "${installed_ver}" != "${remote_ver}" ]]; then
+        log_error "覆盖后版本核对失败：目标实际版本 ${installed_ver:-未知}，远程版本 ${remote_ver}"
+        log_error "可能的原因：脚本路径识别错误，写入的不是当前运行的主脚本。"
+        echo "  - 目标脚本路径：${target}"
+        if [[ -f "${SHORTCUT_PATH}" ]]; then
+            echo "  - 快捷命令路径：${SHORTCUT_PATH}"
+            echo "  - 快捷命令内容（前 5 行）："
+            sed -n '1,5p' "${SHORTCUT_PATH}" | sed 's/^/      /'
+        else
+            echo "  - 快捷命令路径：未安装"
+        fi
+        if [[ -n "${backup_path}" && -f "${backup_path}" ]] && \
+           cp -af -- "${backup_path}" "${target}" 2>/dev/null; then
+            log_info "已回滚到：${backup_path}"
+        fi
+        return 1
+    fi
+    log_ok "管理脚本已更新到 ${installed_ver}（路径：${target}）"
+
+    # 8) 同步快捷命令 wrapper（仅当带项目标记时）
+    sync_wrapper_to_target "${target}"
+
+    # 9) 登记"待重启新版菜单"；由 check_and_update_all 在所有更新完成后统一询问 exec/exit
+    #    不在此处就地 exec/exit，避免跳过其它组件的更新（ssserver / shadow-tls / 快捷命令）
+    _MGR_UPDATE_TARGET="${target}"
+    _MGR_UPDATE_VERSION="${installed_ver}"
     return 0
 }
 
@@ -3044,11 +3206,30 @@ update_manager_script() {
 check_and_update_all() {
     log_step "一键检查更新"
 
+    # 清掉上一轮可能残留的"待重启"登记
+    _MGR_UPDATE_TARGET=""
+    _MGR_UPDATE_VERSION=""
+
     # ---------- 管理脚本 ----------
-    local mgr_cur mgr_remote mgr_state
-    mgr_cur="${SCRIPT_VERSION}"
+    local mgr_cur mgr_remote mgr_state mgr_run_path mgr_shortcut_path mgr_shortcut_target
+    mgr_cur="${MANAGER_VERSION}"
     mgr_remote="$(_fetch_remote_manager_version 2>/dev/null || true)"
-    if [[ -z "${mgr_remote}" ]]; then
+    mgr_run_path="$(get_manager_script_path 2>/dev/null || true)"
+    if [[ -f "${SHORTCUT_PATH}" ]]; then
+        mgr_shortcut_path="${SHORTCUT_PATH}"
+        if grep -q "${SHORTCUT_MARKER}" "${SHORTCUT_PATH}" 2>/dev/null; then
+            mgr_shortcut_target="$(_extract_wrapper_target "${SHORTCUT_PATH}")"
+            [[ -z "${mgr_shortcut_target}" ]] && mgr_shortcut_target="（未能解析 exec 目标）"
+        else
+            mgr_shortcut_target="（非本项目创建，未解析）"
+        fi
+    else
+        mgr_shortcut_path="未安装"
+        mgr_shortcut_target="N/A"
+    fi
+    if [[ -z "${mgr_run_path}" ]]; then
+        mgr_state="路径异常（无法识别真实主脚本）"
+    elif [[ -z "${mgr_remote}" ]]; then
         mgr_state="无法检测（仓库可能为 Private，或网络受限）"
     elif [[ "${mgr_remote}" == "${mgr_cur}" ]]; then
         mgr_state="已最新"
@@ -3106,9 +3287,12 @@ check_and_update_all() {
     hr
     cat <<EOF
 管理脚本：
-  - 当前版本：${mgr_cur}
-  - 远程版本：${mgr_remote:-未知}
-  - 状态    ：${mgr_state}
+  - 当前版本    ：${mgr_cur}
+  - 远程版本    ：${mgr_remote:-未知}
+  - 当前运行路径：${mgr_run_path:-未识别}
+  - 快捷命令路径：${mgr_shortcut_path}
+  - 快捷命令指向：${mgr_shortcut_target}
+  - 状态        ：${mgr_state}
 
 shadowsocks-rust：
   - 当前版本：${ss_cur}
@@ -3126,12 +3310,15 @@ shadow-tls：
 EOF
     hr
 
-    # 汇总可用更新
+    # 汇总可用更新（路径异常时仅警告，不计入可执行更新）
     local has_update=0
     [[ "${mgr_state}"  == "可更新" ]] && has_update=1
     [[ "${ss_state}"   == "可更新" ]] && has_update=1
     [[ "${stls_state}" == "可更新" ]] && has_update=1
     [[ "${sc_state}"   == "缺失（建议修复）" ]] && has_update=1
+    if [[ "${mgr_state}" == "路径异常（无法识别真实主脚本）" ]]; then
+        log_warn "管理脚本路径异常：建议使用 curl/scp 手动同步到 /root/ss2022-shadowtls-manager.sh"
+    fi
 
     if (( has_update == 0 )); then
         log_ok "全部已是最新（或不需要修复）"
@@ -3154,7 +3341,23 @@ EOF
     if [[ "${sc_state}" == "缺失（建议修复）" ]]; then
         install_shortcut_command || log_warn "快捷命令修复失败"
     fi
-    log_ok "更新流程结束。如有管理脚本更新，请退出后重新运行 ss2022。"
+
+    # ---------- 管理脚本更新成功 → 必须重启新版（不允许继续停留在旧进程） ----------
+    if [[ -n "${_MGR_UPDATE_TARGET}" ]]; then
+        hr
+        log_ok "已更新，请重新运行 ss2022"
+        log_info "新版本：${_MGR_UPDATE_VERSION:-未知}   主脚本路径：${_MGR_UPDATE_TARGET}"
+        read -r -p "是否立即重新启动新版管理菜单? [Y/n]: " a
+        if [[ ! "${a}" =~ ^[Nn]$ ]]; then
+            log_info "正在以新版本重新启动..."
+            exec "${_MGR_UPDATE_TARGET}"
+        fi
+        # 用户不重启 → 旧进程已被新文件覆盖，菜单显示等都会出现版本不一致；直接退出
+        log_warn "退出当前旧进程，请稍后手动运行 ss2022 加载新版本。"
+        exit 0
+    fi
+
+    log_ok "更新流程结束。"
 }
 
 # -----------------------------------------------------------------------------
@@ -3212,7 +3415,7 @@ status_line() {
 
     # 5 行紧凑状态栏
     printf '版本：%s   监听模式：%s   IPv4：%s   IPv6：%s\n' \
-        "${SCRIPT_VERSION}" "${mode:-dual}" "${v4:-未检测}" "${v6:-未检测}"
+        "${MANAGER_VERSION}" "${mode:-dual}" "${v4:-未检测}" "${v6:-未检测}"
     printf 'SS2022    ：%s / %s   端口：%s   模式：%s\n' \
         "${ss_label}" "${ss_active}" "${ss_port_disp}" "${ss_mode_disp}"
     if (( stls_enabled )); then
@@ -3242,7 +3445,7 @@ shortcut_status_label() {
 print_main_menu() {
     clear 2>/dev/null || true
     cat <<EOF
-${C_BOLD}SS2022 + ShadowTLS 管理脚本 ${SCRIPT_VERSION}${C_RESET}
+${C_BOLD}SS2022 + ShadowTLS 管理脚本 ${MANAGER_VERSION}${C_RESET}
 EOF
     status_line
     hr
