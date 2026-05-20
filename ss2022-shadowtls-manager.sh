@@ -17,7 +17,7 @@ umask 077
 # -----------------------------------------------------------------------------
 # 常量与路径定义（仅允许操作以下路径）
 # -----------------------------------------------------------------------------
-readonly SCRIPT_VERSION="v0.1.1-alpha"
+readonly SCRIPT_VERSION="v0.1.2-alpha"
 readonly SCRIPT_NAME="ss2022-shadowtls-manager"
 
 readonly PROJECT_ROOT="/root/ss2022-shadowtls-manager"
@@ -43,6 +43,10 @@ readonly SYSCTL_CONF="/etc/sysctl.d/99-ss2022-shadowtls.conf"
 # 快捷命令 wrapper（由本项目创建）：通过标记字符串识别归属，避免误删同名文件
 readonly SHORTCUT_PATH="/usr/local/bin/ss2022"
 readonly SHORTCUT_MARKER="managed by ss2022-shadowtls-manager"
+
+# 管理脚本远程更新地址：仅 Public 仓库可用；Private 仓库会返回 404 / 401，
+# 此时 check_and_update_all 会给出 "请用 scp / git pull 手动更新" 的提示，不报硬错
+readonly MANAGER_UPDATE_URL="https://raw.githubusercontent.com/misaka-cpu/ss2022-shadowtls-manager/main/ss2022-shadowtls-manager.sh"
 
 # 上游仓库
 readonly SS_RUST_REPO="shadowsocks/shadowsocks-rust"
@@ -987,15 +991,19 @@ install_ss2022() {
     refresh_public_ips
     log_ok "SS2022 安装完成"
 
-    # 安装成功后询问是否创建快捷命令（默认 Y）
-    if ! shortcut_installed; then
-        read -r -p "是否创建快捷命令 ss2022（以后直接输入 ss2022 进入管理菜单）? [Y/n]: " _ans
-        if [[ ! "${_ans}" =~ ^[Nn]$ ]]; then
-            install_shortcut_command || log_warn "快捷命令安装失败（可稍后在「高级设置」中重试）"
+    # 自动安装快捷命令（成功/失败均不阻塞主流程；已存在非项目文件时函数自身会拒绝并提示）
+    if shortcut_installed; then
+        log_info "快捷命令 ss2022 已存在，无需重新创建"
+    else
+        if install_shortcut_command; then
+            log_ok "快捷命令已创建，以后可直接输入 ss2022 打开管理菜单"
+        else
+            log_warn "快捷命令未能创建，可稍后在「高级设置 → 修复快捷命令」中重试"
         fi
     fi
 
-    show_node_info
+    # 直接展示节点信息（遮蔽版）+ 询问完整链接 + 二维码
+    show_node_info_with_qrcode
 }
 
 uninstall_ss2022() {
@@ -2049,12 +2057,12 @@ gen_mihomo_only() {
 }
 
 # -----------------------------------------------------------------------------
-# 二维码生成
+# 二维码生成（仅终端显示，不写 PNG）
 # -----------------------------------------------------------------------------
-# 仅在终端显示二维码；不再写 PNG 文件
-# 参数：content
-# qrencode 缺失时尝试 apt 安装一次；仍失败则只输出文字链接并返回 1（不退出）
-generate_qrcode() {
+# generate_terminal_qrcode <content>
+#   - qrencode 缺失时尝试 apt 安装一次；仍失败则只输出文字链接，返回 1（不退出）
+#   - 不接收文件路径；不保存任何文件
+generate_terminal_qrcode() {
     local content="$1"
     if ! command -v qrencode >/dev/null 2>&1; then
         log_warn "qrencode 未安装，尝试 apt 安装..."
@@ -2084,67 +2092,59 @@ generate_qrcode() {
 }
 
 confirm_show_secret() {
-    read -r -p "是否显示完整敏感内容（密码 / 完整链接）? [y/N]: " a
+    read -r -p "是否显示完整链接和二维码？二维码包含完整密码，请勿截图外传。[y/N]: " a
     [[ "${a}" =~ ^[Yy]$ ]]
 }
 
-# 二维码安全提示，确认后才在终端显示；默认不写 PNG
-confirm_show_qr_terminal() {
-    log_warn "二维码包含完整节点链接和密码，请勿截图发给他人"
-    log_warn "默认不会保存 PNG 文件，仅在当前终端显示"
-    read -r -p "是否在终端显示二维码? [y/N]: " a
-    [[ "${a}" =~ ^[Yy]$ ]]
-}
-
-qr_ss2022() {
-    [[ "$(info_get '.ss2022.installed')" == "true" ]] || { log_warn "SS2022 未安装"; return; }
-    local stls_enabled
-    stls_enabled="$(info_get '.shadowtls.enabled')"
-
-    # H2-A：ShadowTLS 启用时不再生成"端口指向 ShadowTLS"的普通 SS 链接二维码
-    if [[ "${stls_enabled}" == "true" ]]; then
-        log_warn "已启用 ShadowTLS：公网入口为 ShadowTLS，请使用「显示 SS + ShadowTLS 二维码」"
-        log_warn "下方仅能生成 127.0.0.1:本地端口 的 SS2022 内部调试二维码（不能作为公网节点）"
-        read -r -p "是否生成内部调试二维码? [y/N]: " a
-        [[ "${a}" =~ ^[Yy]$ ]] || { log_info "已取消"; return; }
-        confirm_show_qr_terminal || { log_info "已取消显示"; return; }
-        local _local_port _uri
-        _local_port="$(info_get '.ss2022.local_port')"
-        _uri="$(generate_ss_uri "127.0.0.1" "${_local_port}" "SS2022-INTERNAL-DEBUG")"
-        printf '\n=== SS2022 内部调试二维码 (127.0.0.1:%s) ===\n' "${_local_port}"
-        generate_qrcode "${_uri}"
+# 根据 ShadowTLS 状态选择"推荐公网导入用"的 URI 并显示完整链接 + 终端二维码
+#   - ShadowTLS 启用：使用 SS + ShadowTLS 合并链接（SIP002 plugin URI）
+#   - 否则：使用普通 SS2022 ss:// 链接
+# 不接收参数；从 info.json + collect_servers 自动取数。
+show_recommended_uri_and_qrcode() {
+    if [[ "$(info_get '.ss2022.installed')" != "true" ]]; then
+        log_warn "SS2022 未安装"
         return
     fi
-
-    # ShadowTLS 未启用：常规公网 SS2022 二维码
-    confirm_show_qr_terminal || { log_info "已取消显示"; return; }
+    local stls_enabled
+    stls_enabled="$(info_get '.shadowtls.enabled')"
     local port
-    port="$(info_get '.ss2022.public_port')"
-    while IFS='|' read -r kind server label; do
-        [[ -z "${kind}" ]] && continue
-        local uri
-        uri="$(generate_ss_uri "${server}" "${port}" "SS2022-${label}")"
-        printf '\n=== SS2022 二维码 (%s: %s:%s) ===\n' "${label}" "${server}" "${port}"
-        generate_qrcode "${uri}"
-    done < <(collect_servers)
+    if [[ "${stls_enabled}" == "true" ]]; then
+        port="$(info_get '.shadowtls.port')"
+        echo
+        log_warn "ShadowTLS 已启用，公网连接请优先使用 SS + ShadowTLS 配置。"
+        echo "=== 推荐：SS + ShadowTLS 合并链接（SIP002 plugin URI） ==="
+        while IFS='|' read -r kind server label; do
+            [[ -z "${kind}" ]] && continue
+            local uri
+            uri="$(generate_ss_shadowtls_uri "${server}" "${port}" "SS-STLS-${label}")"
+            printf '\n--- %s (%s:%s) ---\n' "${label}" "${server}" "${port}"
+            echo "${uri}"
+            generate_terminal_qrcode "${uri}"
+        done < <(collect_servers)
+    else
+        port="$(info_get '.ss2022.public_port')"
+        echo
+        echo "=== 推荐：SS2022 ss:// 链接 ==="
+        while IFS='|' read -r kind server label; do
+            [[ -z "${kind}" ]] && continue
+            local uri
+            uri="$(generate_ss_uri "${server}" "${port}" "SS2022-${label}")"
+            printf '\n--- %s (%s:%s) ---\n' "${label}" "${server}" "${port}"
+            echo "${uri}"
+            generate_terminal_qrcode "${uri}"
+        done < <(collect_servers)
+    fi
 }
 
-qr_ss_stls() {
-    [[ "$(info_get '.shadowtls.enabled')" == "true" ]] || { log_warn "ShadowTLS 未启用"; return; }
-    confirm_show_qr_terminal || { log_info "已取消显示"; return; }
-    local port; port="$(info_get '.shadowtls.port')"
-    while IFS='|' read -r kind server label; do
-        [[ -z "${kind}" ]] && continue
-        local uri
-        uri="$(generate_ss_shadowtls_uri "${server}" "${port}" "SS-STLS-${label}")"
-        printf '\n=== SS + ShadowTLS 二维码 (%s: %s:%s) ===\n' "${label}" "${server}" "${port}"
-        generate_qrcode "${uri}"
-    done < <(collect_servers)
-}
-
-qr_all() {
-    qr_ss2022
-    [[ "$(info_get '.shadowtls.enabled')" == "true" ]] && qr_ss_stls
+# 主入口：先显示遮蔽信息，询问后再显示完整链接 + 二维码
+show_node_info_with_qrcode() {
+    show_node_info
+    if confirm_show_secret; then
+        show_full_node_info
+        show_recommended_uri_and_qrcode
+    else
+        log_info "已取消显示完整链接和二维码"
+    fi
 }
 
 # -----------------------------------------------------------------------------
@@ -2432,6 +2432,194 @@ update_shadowtls() {
 }
 
 # -----------------------------------------------------------------------------
+# 一键检查更新（管理脚本 / shadowsocks-rust / shadow-tls / 快捷命令）
+# -----------------------------------------------------------------------------
+
+# 远端管理脚本版本探测：从 raw URL 抓首 100 行 grep SCRIPT_VERSION
+# 失败返回空串；不打 log_error（仅 log_info），让 check_and_update_all 做更友好的分流
+_fetch_remote_manager_version() {
+    local body
+    body="$(curl -fsSL --max-time 15 "${MANAGER_UPDATE_URL}" 2>/dev/null | head -n 100 || true)"
+    [[ -z "${body}" ]] && return 1
+    # 取 readonly SCRIPT_VERSION="vX.Y.Z..." 中的版本号
+    local ver
+    ver="$(echo "${body}" | grep -E '^readonly SCRIPT_VERSION=' | head -n 1 | sed -E 's/.*"(.*)".*/\1/')"
+    [[ -z "${ver}" ]] && return 1
+    printf '%s' "${ver}"
+}
+
+# 下载并应用管理脚本更新；下载内容通过 bash -n 校验后才覆盖
+update_manager_script() {
+    local target
+    target="$(readlink -f -- "${BASH_SOURCE[0]}" 2>/dev/null)"
+    if [[ -z "${target}" || ! -f "${target}" ]]; then
+        log_error "无法解析当前脚本真实路径，跳过管理脚本更新"
+        return 1
+    fi
+    log_step "更新管理脚本：${target}"
+    # 备份当前脚本
+    local ts backup_path
+    ts="$(date +%Y%m%d-%H%M%S)"
+    backup_path="${PROJECT_BACKUP_DIR}/$(basename "${target}").${ts}.bak"
+    if ! cp -a -- "${target}" "${backup_path}" 2>/dev/null; then
+        log_warn "备份当前脚本失败：${backup_path}（仍继续更新）"
+    else
+        log_info "已备份当前脚本：${backup_path}"
+    fi
+    # 下载到临时文件
+    local tmp
+    if ! tmp="$(mktemp -t ss2022-mgr.XXXXXX 2>/dev/null)" \
+            || [[ -z "${tmp}" || ! -f "${tmp}" ]]; then
+        log_error "创建临时文件失败"
+        return 1
+    fi
+    if ! curl -fsSL --max-time 60 -o "${tmp}" "${MANAGER_UPDATE_URL}"; then
+        safe_remove_tmpfile "${tmp}"
+        log_error "管理脚本远程更新失败"
+        log_warn "如果仓库是 Private，请使用 scp 或 git pull 手动更新"
+        return 1
+    fi
+    if [[ ! -s "${tmp}" ]]; then
+        safe_remove_tmpfile "${tmp}"
+        log_error "远程脚本下载内容为空"
+        return 1
+    fi
+    # bash -n 校验
+    if ! bash -n "${tmp}" 2>/dev/null; then
+        safe_remove_tmpfile "${tmp}"
+        log_error "远程脚本 bash -n 校验失败，拒绝覆盖"
+        return 1
+    fi
+    # 覆盖到目标
+    if ! install -m 0755 "${tmp}" "${target}"; then
+        safe_remove_tmpfile "${tmp}"
+        log_error "覆盖目标失败：${target}"
+        return 1
+    fi
+    safe_remove_tmpfile "${tmp}"
+    log_ok "管理脚本已更新：${target}"
+    log_warn "请退出当前菜单并重新运行 ss2022 以加载新版本"
+    return 0
+}
+
+# 一键检查更新：列状态表，询问后才应用可用更新
+check_and_update_all() {
+    log_step "一键检查更新"
+
+    # ---------- 管理脚本 ----------
+    local mgr_cur mgr_remote mgr_state
+    mgr_cur="${SCRIPT_VERSION}"
+    mgr_remote="$(_fetch_remote_manager_version 2>/dev/null || true)"
+    if [[ -z "${mgr_remote}" ]]; then
+        mgr_state="无法检测（仓库可能为 Private，或网络受限）"
+    elif [[ "${mgr_remote}" == "${mgr_cur}" ]]; then
+        mgr_state="已最新"
+    else
+        mgr_state="可更新"
+    fi
+
+    # ---------- shadowsocks-rust ----------
+    local ss_cur ss_latest ss_state
+    ss_cur="$(info_get '.ss2022.binary_version')"
+    [[ -z "${ss_cur}" ]] && ss_cur="未知"
+    ss_latest="$(github_latest_tag "${SS_RUST_REPO}" 2>/dev/null || true)"
+    if [[ -z "${ss_latest}" ]]; then
+        ss_state="无法检测"
+    elif [[ "${ss_cur}" == "${ss_latest}" ]]; then
+        ss_state="已最新"
+    elif [[ "${ss_cur}" == "未知" ]]; then
+        ss_state="未安装或版本未知"
+    else
+        ss_state="可更新"
+    fi
+
+    # ---------- shadow-tls ----------
+    local stls_cur stls_latest stls_state
+    stls_cur="$(info_get '.shadowtls.binary_version')"
+    if [[ "$(info_get '.shadowtls.installed')" != "true" ]]; then
+        stls_state="未安装"
+        stls_cur="—"
+        stls_latest="—"
+    else
+        [[ -z "${stls_cur}" ]] && stls_cur="未知"
+        stls_latest="$(github_latest_tag "${STLS_REPO}" 2>/dev/null || true)"
+        if [[ -z "${stls_latest}" ]]; then
+            stls_state="无法检测"
+        elif [[ "${stls_cur}" == "${stls_latest}" ]]; then
+            stls_state="已最新"
+        elif [[ "${stls_cur}" == "未知" ]]; then
+            stls_state="版本未知"
+        else
+            stls_state="可更新"
+        fi
+    fi
+
+    # ---------- 快捷命令 ----------
+    local sc_state
+    if shortcut_installed; then
+        sc_state="正常"
+    elif [[ -e "${SHORTCUT_PATH}" ]]; then
+        sc_state="存在但非本项目创建（保留，不修复）"
+    else
+        sc_state="缺失（建议修复）"
+    fi
+
+    # ---------- 报表 ----------
+    hr
+    cat <<EOF
+管理脚本：
+  - 当前版本：${mgr_cur}
+  - 远程版本：${mgr_remote:-未知}
+  - 状态    ：${mgr_state}
+
+shadowsocks-rust：
+  - 当前版本：${ss_cur}
+  - 最新版本：${ss_latest:-未知}
+  - 状态    ：${ss_state}
+
+shadow-tls：
+  - 当前版本：${stls_cur}
+  - 最新版本：${stls_latest:-未知}
+  - 状态    ：${stls_state}
+
+快捷命令：
+  - 路径    ：${SHORTCUT_PATH}
+  - 状态    ：${sc_state}
+EOF
+    hr
+
+    # 汇总可用更新
+    local has_update=0
+    [[ "${mgr_state}"  == "可更新" ]] && has_update=1
+    [[ "${ss_state}"   == "可更新" ]] && has_update=1
+    [[ "${stls_state}" == "可更新" ]] && has_update=1
+    [[ "${sc_state}"   == "缺失（建议修复）" ]] && has_update=1
+
+    if (( has_update == 0 )); then
+        log_ok "全部已是最新（或不需要修复）"
+        return 0
+    fi
+
+    read -r -p "是否执行可用更新? [y/N]: " a
+    [[ "${a}" =~ ^[Yy]$ ]] || { log_info "已取消"; return; }
+
+    # ---------- 应用更新 ----------
+    if [[ "${mgr_state}" == "可更新" ]]; then
+        update_manager_script || log_warn "管理脚本更新失败（继续后续更新）"
+    fi
+    if [[ "${ss_state}" == "可更新" ]]; then
+        update_shadowsocks_rust || log_warn "shadowsocks-rust 更新失败"
+    fi
+    if [[ "${stls_state}" == "可更新" ]]; then
+        update_shadowtls || log_warn "shadow-tls 更新失败"
+    fi
+    if [[ "${sc_state}" == "缺失（建议修复）" ]]; then
+        install_shortcut_command || log_warn "快捷命令修复失败"
+    fi
+    log_ok "更新流程结束。如有管理脚本更新，请退出后重新运行 ss2022。"
+}
+
+# -----------------------------------------------------------------------------
 # 主菜单
 # -----------------------------------------------------------------------------
 status_line() {
@@ -2459,6 +2647,13 @@ status_line() {
         "$([[ "${stls_en}" == "true" ]] && echo 已启用 || echo 未启用)" \
         "${stls_port:-N/A}" "${stls_active}"
     printf '时间同步  ：%s\n' "$(time_status_label)"
+    local shortcut_label
+    if shortcut_installed; then
+        shortcut_label="${C_GREEN}已安装${C_RESET}"
+    else
+        shortcut_label="${C_YELLOW}未安装${C_RESET}"
+    fi
+    printf '快捷命令  ：%s\n' "${shortcut_label}"
 }
 
 print_main_menu() {
@@ -2470,13 +2665,13 @@ EOF
     hr
     cat <<'EOF'
 主菜单：
-  1) 一键安装 SS2022
-  2) 启用 / 配置 ShadowTLS v3
+  1) 一键安装 / 重装
+  2) 启用 / 配置 ShadowTLS
   3) 查看节点信息
-  4) 生成二维码
-  5) 服务管理
-  6) 网络与时间
-  7) 高级设置
+  4) 服务管理
+  5) 网络与时间
+  6) 高级设置
+  7) 一键检查更新
   8) 一键完整卸载
   0) 退出
 EOF
@@ -2507,81 +2702,41 @@ EOF
     done
 }
 
-submenu_node_info() {
-    while :; do
-        clear 2>/dev/null || true
-        cat <<'EOF'
-节点信息：
-  1) 查看节点信息（密码遮蔽）
-  2) 显示完整节点信息（含完整密码 / 链接 / 客户端配置）
-  3) 生成 SS2022 普通链接
-  4) 生成 SS + ShadowTLS 合并链接
-  5) 生成 sing-box 配置
-  6) 生成 mihomo / Clash Meta 配置
-  0) 返回主菜单
-EOF
-        read -r -p "请输入选项: " c
-        case "${c}" in
-            1) show_node_info ;;
-            2) show_full_node_info ;;
-            3) gen_ss_uri_only ;;
-            4) gen_ss_stls_uri_only ;;
-            5) gen_singbox_only ;;
-            6) gen_mihomo_only ;;
-            0) return ;;
-            *) log_error "无效选项：${c}" ;;
-        esac
-        press_any_key
-    done
-}
-
-submenu_qr() {
-    while :; do
-        clear 2>/dev/null || true
-        cat <<'EOF'
-生成二维码（默认仅在终端显示，不保存 PNG 文件）：
-  1) 显示 SS2022 二维码
-  2) 显示 SS + ShadowTLS 二维码
-  3) 显示全部二维码
-  0) 返回主菜单
-EOF
-        read -r -p "请输入选项: " c
-        case "${c}" in
-            1) qr_ss2022 ;;
-            2) qr_ss_stls ;;
-            3) qr_all ;;
-            0) return ;;
-            *) log_error "无效选项：${c}" ;;
-        esac
-        press_any_key
-    done
-}
-
 submenu_service() {
     while :; do
         clear 2>/dev/null || true
         cat <<'EOF'
 服务管理：
-  1) 启动 SS2022          2) 停止 SS2022
-  3) 重启 SS2022          4) 查看 SS2022 状态
-  5) 查看 SS2022 日志
-  6) 启动 ShadowTLS       7) 停止 ShadowTLS
-  8) 重启 ShadowTLS       9) 查看 ShadowTLS 状态
- 10) 查看 ShadowTLS 日志
+  1) 重启全部服务（SS2022 + ShadowTLS）
+  2) 查看服务状态
+  3) 查看实时日志
+  4) 启动服务
+  5) 停止服务
   0) 返回主菜单
 EOF
         read -r -p "请输入选项: " c
         case "${c}" in
-            1)  start_service   "${SS_SERVICE_NAME}" ;;
-            2)  stop_service    "${SS_SERVICE_NAME}" ;;
-            3)  restart_service "${SS_SERVICE_NAME}" ;;
-            4)  status_service  "${SS_SERVICE_NAME}" ;;
-            5)  journal_follow  "${SS_SERVICE_NAME}" ;;
-            6)  start_service   "${STLS_SERVICE_NAME}" ;;
-            7)  stop_service    "${STLS_SERVICE_NAME}" ;;
-            8)  restart_service "${STLS_SERVICE_NAME}" ;;
-            9)  status_service  "${STLS_SERVICE_NAME}" ;;
-            10) journal_follow  "${STLS_SERVICE_NAME}" ;;
+            1) restart_service "${SS_SERVICE_NAME}"
+               [[ "$(info_get '.shadowtls.enabled')" == "true" ]] && restart_service "${STLS_SERVICE_NAME}"
+               ;;
+            2) status_service "${SS_SERVICE_NAME}"
+               echo
+               [[ "$(info_get '.shadowtls.installed')" == "true" ]] && status_service "${STLS_SERVICE_NAME}"
+               ;;
+            3) echo "  1) SS2022 日志    2) ShadowTLS 日志"
+               read -r -p "选择 [1-2]: " sub
+               case "${sub}" in
+                   1) journal_follow "${SS_SERVICE_NAME}" ;;
+                   2) journal_follow "${STLS_SERVICE_NAME}" ;;
+                   *) log_error "无效选项" ;;
+               esac
+               ;;
+            4) start_service "${SS_SERVICE_NAME}"
+               [[ "$(info_get '.shadowtls.enabled')" == "true" ]] && start_service "${STLS_SERVICE_NAME}"
+               ;;
+            5) [[ "$(info_get '.shadowtls.installed')" == "true" ]] && stop_service "${STLS_SERVICE_NAME}"
+               stop_service "${SS_SERVICE_NAME}"
+               ;;
             0) return ;;
             *) log_error "无效选项：${c}" ;;
         esac
@@ -2594,13 +2749,12 @@ submenu_network_time() {
         clear 2>/dev/null || true
         cat <<'EOF'
 网络与时间：
-  1) 检测公网 IPv4 / IPv6
+  1) 检测公网 IP（IPv4 / IPv6）
   2) 设置服务器域名
-  3) 设置 IPv4 / IPv6 监听模式
-  4) 查看系统时间与时区
-  5) 自动校准系统时间（NTP / chrony）
-  6) 手动设置时区
-  7) 手动设置系统时间
+  3) 设置监听模式（IPv4 / IPv6 / 双栈）
+  4) 查看时间状态
+  5) 自动校准时间
+  6) 设置时区
   0) 返回主菜单
 EOF
         read -r -p "请输入选项: " c
@@ -2614,7 +2768,74 @@ EOF
             4) show_time_status ;;
             5) sync_time_auto ;;
             6) set_timezone_interactive ;;
-            7) set_time_manual ;;
+            0) return ;;
+            *) log_error "无效选项：${c}" ;;
+        esac
+        press_any_key
+    done
+}
+
+submenu_modify_ss2022() {
+    while :; do
+        clear 2>/dev/null || true
+        cat <<'EOF'
+修改 SS2022 设置：
+  1) 修改端口
+  2) 修改密码
+  3) 修改加密方式
+  4) 卸载 SS2022（保留 ShadowTLS / 不动其它）
+  0) 返回上一级
+EOF
+        read -r -p "请输入选项: " c
+        case "${c}" in
+            1) modify_ss2022_port ;;
+            2) modify_ss2022_password ;;
+            3) modify_ss2022_method ;;
+            4) uninstall_ss2022 ;;
+            0) return ;;
+            *) log_error "无效选项：${c}" ;;
+        esac
+        press_any_key
+    done
+}
+
+submenu_modify_shadowtls() {
+    while :; do
+        clear 2>/dev/null || true
+        cat <<'EOF'
+修改 ShadowTLS 设置：
+  1) 修改端口
+  2) 修改密码
+  3) 修改伪装域名
+  0) 返回上一级
+EOF
+        read -r -p "请输入选项: " c
+        case "${c}" in
+            1) modify_stls_port ;;
+            2) modify_stls_password ;;
+            3) modify_stls_domain ;;
+            0) return ;;
+            *) log_error "无效选项：${c}" ;;
+        esac
+        press_any_key
+    done
+}
+
+submenu_udp_bbr() {
+    while :; do
+        clear 2>/dev/null || true
+        cat <<'EOF'
+UDP / BBR 设置：
+  1) 设置 UDP 模式
+  2) 启用 BBR
+  3) 查看系统优化状态
+  0) 返回上一级
+EOF
+        read -r -p "请输入选项: " c
+        case "${c}" in
+            1) set_udp_mode ;;
+            2) enable_bbr ;;
+            3) show_sys_opt ;;
             0) return ;;
             *) log_error "无效选项：${c}" ;;
         esac
@@ -2627,40 +2848,23 @@ submenu_advanced() {
         clear 2>/dev/null || true
         cat <<'EOF'
 高级设置：
-  1) 修改 SS2022 端口
-  2) 修改 SS2022 密码
-  3) 修改 SS2022 加密方式
-  4) 修改 ShadowTLS 端口
-  5) 修改 ShadowTLS 密码
-  6) 修改 ShadowTLS 伪装域名
-  7) 设置 UDP 模式
-  8) 启用 BBR / 查看系统优化状态
-  9) 更新 shadowsocks-rust
- 10) 更新 shadow-tls
- 11) 卸载 SS2022（不卸载 ShadowTLS / 不动其它）
- 12) 安装 / 更新快捷命令 ss2022
- 13) 删除快捷命令 ss2022
+  1) 修改 SS2022 设置
+  2) 修改 ShadowTLS 设置
+  3) UDP / BBR 设置
+  4) 修复快捷命令（重新安装 /usr/local/bin/ss2022）
+  5) 删除快捷命令
   0) 返回主菜单
 EOF
         read -r -p "请输入选项: " c
         case "${c}" in
-            1)  modify_ss2022_port ;;
-            2)  modify_ss2022_password ;;
-            3)  modify_ss2022_method ;;
-            4)  modify_stls_port ;;
-            5)  modify_stls_password ;;
-            6)  modify_stls_domain ;;
-            7)  set_udp_mode ;;
-            8)  enable_bbr; echo; show_sys_opt ;;
-            9)  update_shadowsocks_rust ;;
-            10) update_shadowtls ;;
-            11) uninstall_ss2022 ;;
-            12) install_shortcut_command ;;
-            13) remove_shortcut_command ;;
+            1) submenu_modify_ss2022 ;;
+            2) submenu_modify_shadowtls ;;
+            3) submenu_udp_bbr ;;
+            4) install_shortcut_command; press_any_key ;;
+            5) remove_shortcut_command; press_any_key ;;
             0) return ;;
             *) log_error "无效选项：${c}" ;;
         esac
-        press_any_key
     done
 }
 
@@ -2669,11 +2873,11 @@ dispatch() {
     case "${c}" in
         1) install_ss2022 ;;
         2) submenu_shadowtls ;;
-        3) submenu_node_info ;;
-        4) submenu_qr ;;
-        5) submenu_service ;;
-        6) submenu_network_time ;;
-        7) submenu_advanced ;;
+        3) show_node_info_with_qrcode ;;
+        4) submenu_service ;;
+        5) submenu_network_time ;;
+        6) submenu_advanced ;;
+        7) check_and_update_all ;;
         8) uninstall_all ;;
         0) exit 0 ;;
         *) log_error "无效选项：${c}" ;;
@@ -2685,9 +2889,9 @@ main_loop() {
         print_main_menu
         read -r -p "请输入选项: " choice
         dispatch "${choice}"
-        # 子菜单内部自己处理 press_any_key；主菜单的一键操作再补一次
+        # 子菜单内部自己处理 press_any_key；主菜单的一键动作再补一次
         case "${choice}" in
-            1|8) press_any_key ;;
+            1|3|7|8) press_any_key ;;
         esac
     done
 }
