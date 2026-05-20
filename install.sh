@@ -61,6 +61,22 @@ fi
 # -----------------------------------------------------------------------------
 # 2. 检查并安装基础依赖（curl / ca-certificates）—— 支持 apt-get / dnf / yum
 # -----------------------------------------------------------------------------
+print_source_hint() {
+    local mgr="$1"
+    log_warn "可能原因：VPS → 软件源网络慢 / DNS 解析慢 / IPv6 路由异常 / 镜像源不可用 / 系统软件源配置异常"
+    log_warn "请手动执行以下命令确认软件源可用后重试："
+    case "${mgr}" in
+        dnf|yum)
+            log_warn "  ${mgr} makecache"
+            log_warn "  ${mgr} install -y ca-certificates curl"
+            ;;
+        *)
+            log_warn "  apt-get update"
+            log_warn "  apt-get install -y ca-certificates curl"
+            ;;
+    esac
+}
+
 ensure_dep_curl() {
     if have_cmd curl; then
         return 0
@@ -77,25 +93,32 @@ ensure_dep_curl() {
         exit 1
     fi
 
-    log_info "包管理器：${mgr}（更新索引最多等待 120 秒）..."
+    log_info "包管理器：${mgr}（更新索引最多等待 60 秒，安装最多等待 120 秒）..."
+    local rc=0
     case "${mgr}" in
         apt-get)
-            DEBIAN_FRONTEND=noninteractive run_with_timeout 120 apt-get update -y >/dev/null 2>&1 \
-                || log_warn "apt-get update 失败或超时，继续尝试安装"
-            DEBIAN_FRONTEND=noninteractive run_with_timeout 180 apt-get install -y curl ca-certificates >/dev/null 2>&1
+            DEBIAN_FRONTEND=noninteractive run_with_timeout 60 apt-get update -y >/dev/null 2>&1 \
+                || log_warn "apt-get update 失败或超时（60s），继续尝试安装"
+            DEBIAN_FRONTEND=noninteractive run_with_timeout 120 apt-get install -y curl ca-certificates >/dev/null 2>&1 || rc=$?
             ;;
         dnf)
-            run_with_timeout 120 dnf makecache -y >/dev/null 2>&1 || log_warn "dnf makecache 失败或超时"
-            run_with_timeout 180 dnf install -y curl ca-certificates >/dev/null 2>&1
+            run_with_timeout 60 dnf makecache -y >/dev/null 2>&1 || log_warn "dnf makecache 失败或超时（60s）"
+            run_with_timeout 120 dnf install -y curl ca-certificates >/dev/null 2>&1 || rc=$?
             ;;
         yum)
-            run_with_timeout 120 yum makecache >/dev/null 2>&1 || log_warn "yum makecache 失败或超时"
-            run_with_timeout 180 yum install -y curl ca-certificates >/dev/null 2>&1
+            run_with_timeout 60 yum makecache >/dev/null 2>&1 || log_warn "yum makecache 失败或超时（60s）"
+            run_with_timeout 120 yum install -y curl ca-certificates >/dev/null 2>&1 || rc=$?
             ;;
     esac
 
+    if [[ ${rc} -eq 124 ]]; then
+        log_error "安装 curl / ca-certificates 超时（120s），软件源响应过慢，已放弃。"
+        print_source_hint "${mgr}"
+        exit 1
+    fi
     if ! have_cmd curl; then
-        log_error "curl 安装失败；请手动安装 curl 与 ca-certificates 后重试"
+        log_error "curl 安装失败（rc=${rc}）；请手动安装 curl 与 ca-certificates 后重试"
+        print_source_hint "${mgr}"
         exit 1
     fi
     log_ok "curl / ca-certificates 已安装"

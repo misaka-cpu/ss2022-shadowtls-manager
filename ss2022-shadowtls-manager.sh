@@ -18,10 +18,10 @@ umask 077
 # 常量与路径定义（仅允许操作以下路径）
 # -----------------------------------------------------------------------------
 # 项目唯一版本常量；远程升级时从该常量提取版本号
-readonly MANAGER_VERSION="v1.0.0"
+readonly MANAGER_VERSION="v1.0.1"
 # 别名：兼容仍在 v0.1.5 及更早版本的客户端进行远程版本探测（它们 grep SCRIPT_VERSION）
 # 必须使用字面量字符串而非 "${MANAGER_VERSION}"，否则旧版客户端 grep + sed 提取到的是字面 ${MANAGER_VERSION}
-readonly SCRIPT_VERSION="v1.0.0"
+readonly SCRIPT_VERSION="v1.0.1"
 
 # 菜单返回码约定（v0.1.5）：
 #   - 普通返回（默认 0 / 非 10）：调用方按既有规则处理 press_any_key
@@ -194,7 +194,9 @@ detect_arch() {
 # -----------------------------------------------------------------------------
 # 依赖安装：支持 apt-get（Debian/Ubuntu）、dnf / yum（RHEL 系）
 #   - 自动检测包管理器
-#   - 更新索引 timeout 120s；安装包 timeout 180s
+#   - 必需依赖一次性批量安装：索引更新 60s 超时，安装 120s 超时
+#   - qrencode / chrony 列为可选依赖，安装主流程不再默认安装
+#   - 单包安装 install_pkg() 仅供可选场景显式调用，并使用 120s 超时
 #   - 索引更新失败不致命，会继续尝试用已有索引安装
 #   - 包名按发行版差异自动映射：xz-utils↔xz、dnsutils↔bind-utils、iproute2↔iproute
 # -----------------------------------------------------------------------------
@@ -243,15 +245,15 @@ _PKG_INDEX_UPDATED=0
 pkg_update_index_once() {
     [[ "${_PKG_INDEX_UPDATED}" -eq 1 ]] && return 0
     _pkg_mgr_detect || { log_warn "未检测到 apt-get / dnf / yum，跳过索引更新"; _PKG_INDEX_UPDATED=1; return 0; }
-    log_info "正在更新软件包索引（最多等待 120 秒）..."
+    log_info "正在更新软件包索引（最多等待 60 秒）..."
     local rc=0
     case "${_PKG_MGR}" in
-        apt-get) DEBIAN_FRONTEND=noninteractive _run_with_timeout 120 apt-get update -y >/dev/null 2>&1 || rc=$? ;;
-        dnf)     _run_with_timeout 120 dnf  makecache -y >/dev/null 2>&1 || rc=$? ;;
-        yum)     _run_with_timeout 120 yum  makecache    >/dev/null 2>&1 || rc=$? ;;
+        apt-get) DEBIAN_FRONTEND=noninteractive _run_with_timeout 60 apt-get update -y >/dev/null 2>&1 || rc=$? ;;
+        dnf)     _run_with_timeout 60 dnf  makecache -y >/dev/null 2>&1 || rc=$? ;;
+        yum)     _run_with_timeout 60 yum  makecache    >/dev/null 2>&1 || rc=$? ;;
     esac
     if [[ ${rc} -eq 124 ]]; then
-        log_warn "软件源响应过慢（120s 超时），可能是网络、DNS、IPv6 或镜像源问题。继续使用已有索引。"
+        log_warn "软件源响应过慢（60s 超时），可能是网络、DNS、IPv6 或镜像源问题。继续使用已有索引。"
     elif [[ ${rc} -ne 0 ]]; then
         log_warn "软件源索引更新失败（rc=${rc}），继续尝试安装已有索引中的依赖。"
     fi
@@ -259,8 +261,22 @@ pkg_update_index_once() {
     return 0
 }
 
-# 安装一个包（命令或 Debian 包名），带 180 秒超时
+# 网络源慢 / 软件源不可用时的统一手动命令提示
+_print_source_diagnostic_hint() {
+    log_warn "可能原因：VPS → 软件源网络慢 / DNS 解析慢 / IPv6 路由异常 / 镜像源不可用 / 系统软件源配置异常"
+    log_warn "请手动测试，确认软件源可用后重试："
+    if [[ "${OS_FAMILY}" == "rhel" ]] || [[ "${_PKG_MGR}" == "dnf" || "${_PKG_MGR}" == "yum" ]]; then
+        log_warn "  dnf makecache"
+        log_warn "  dnf install -y ca-certificates curl jq xz iproute bind-utils"
+    else
+        log_warn "  apt-get update"
+        log_warn "  apt-get install -y ca-certificates curl jq xz-utils iproute2 dnsutils"
+    fi
+}
+
+# 安装一个包（命令或 Debian 包名），带 120 秒超时
 # 返回 0 成功 / 124 超时 / 其它 = 失败
+# 仅用于可选依赖（如 chrony / qrencode）显式调用；主流程不再逐包调用。
 install_pkg() {
     local pkg="$1" real_pkg rc=0
     real_pkg="$(_pkg_name_for_distro "${pkg}")"
@@ -268,74 +284,104 @@ install_pkg() {
     # 已存在同名命令则跳过（覆盖 xz/iproute2/dnsutils 等"命令即包"语义）
     if _have_cmd "${pkg%% *}"; then return 0; fi
     _pkg_mgr_detect || { log_warn "未检测到包管理器，无法安装 ${real_pkg}"; return 1; }
-    log_info "正在安装依赖：${real_pkg}（最多等待 180 秒）..."
+    log_info "正在安装依赖：${real_pkg}（最多等待 120 秒）..."
     case "${_PKG_MGR}" in
-        apt-get) DEBIAN_FRONTEND=noninteractive _run_with_timeout 180 apt-get install -y "${real_pkg}" >/dev/null 2>&1 || rc=$? ;;
-        dnf)     _run_with_timeout 180 dnf install -y "${real_pkg}" >/dev/null 2>&1 || rc=$? ;;
-        yum)     _run_with_timeout 180 yum install -y "${real_pkg}" >/dev/null 2>&1 || rc=$? ;;
+        apt-get) DEBIAN_FRONTEND=noninteractive _run_with_timeout 120 apt-get install -y "${real_pkg}" >/dev/null 2>&1 || rc=$? ;;
+        dnf)     _run_with_timeout 120 dnf install -y "${real_pkg}" >/dev/null 2>&1 || rc=$? ;;
+        yum)     _run_with_timeout 120 yum install -y "${real_pkg}" >/dev/null 2>&1 || rc=$? ;;
+    esac
+    if [[ ${rc} -eq 124 ]]; then
+        log_warn "安装 ${real_pkg} 超时（120s），软件源响应过慢，已放弃。"
+        _print_source_diagnostic_hint
+    fi
+    return ${rc}
+}
+
+# 必需依赖批量安装（一次性传所有缺失包给 apt/dnf/yum），整体 120s 超时
+# 返回 0 成功 / 124 超时 / 其它 = 失败
+_install_required_pkgs_batch() {
+    local rc=0
+    _pkg_mgr_detect || return 1
+    log_info "正在批量安装必需依赖：$* （最多等待 120 秒）..."
+    case "${_PKG_MGR}" in
+        apt-get) DEBIAN_FRONTEND=noninteractive _run_with_timeout 120 apt-get install -y "$@" >/dev/null 2>&1 || rc=$? ;;
+        dnf)     _run_with_timeout 120 dnf install -y "$@" >/dev/null 2>&1 || rc=$? ;;
+        yum)     _run_with_timeout 120 yum install -y "$@" >/dev/null 2>&1 || rc=$? ;;
     esac
     return ${rc}
+}
+
+# 必需命令是否都齐全；返回缺失项（空格分隔）
+_required_cmds_missing() {
+    local miss=()
+    _have_cmd curl                          || miss+=(curl)
+    _have_cmd jq                            || miss+=(jq)
+    _have_cmd xz                            || miss+=(xz)
+    _have_cmd ip                            || miss+=(ip)
+    _have_cmd ss                            || miss+=(ss)
+    { _have_cmd dig || _have_cmd nslookup; } || miss+=(dig/nslookup)
+    printf '%s' "${miss[*]}"
 }
 
 install_dependencies() {
     log_step "检查并安装基础依赖"
     if ! _pkg_mgr_detect; then
-        log_warn "未检测到 apt-get / dnf / yum；如缺少基础工具请手动安装："
-        log_warn "  Debian/Ubuntu: apt install -y curl wget tar jq openssl ca-certificates xz-utils iproute2 dnsutils"
-        log_warn "  RHEL/CentOS  : dnf install -y curl wget tar jq openssl ca-certificates xz iproute bind-utils"
-        return 0
+        log_warn "未检测到 apt-get / dnf / yum；请手动安装必需依赖后重试："
+        log_warn "  Debian/Ubuntu: apt-get install -y ca-certificates curl jq xz-utils iproute2 dnsutils"
+        log_warn "  RHEL/CentOS  : dnf install -y ca-certificates curl jq xz iproute bind-utils"
+        log_warn "  qrencode / chrony 为可选依赖，缺失不阻塞主流程；如需可手动安装。"
+        return 1
     fi
     log_info "包管理器：${_PKG_MGR}（OS 家族：${OS_FAMILY}）"
+    log_info "必需依赖：ca-certificates curl jq xz iproute dig"
+    log_info "可选依赖：qrencode（仅用于二维码显示）、chrony（仅用于时间同步备选）"
 
     # 先尝试索引更新（失败仅警告，继续）
     pkg_update_index_once
 
-    # 必备依赖（按 Debian 包名传入；_pkg_name_for_distro 内部映射）
-    local missing=()
-    local failed=()
-    local pkg rc
-    for pkg in curl wget tar jq openssl ca-certificates xz-utils iproute2 dnsutils; do
-        # 命令名即包名的快速跳过
-        if _have_cmd "${pkg%-*}" || _have_cmd "${pkg}" \
-            || { [[ "${pkg}" == xz-utils ]] && _have_cmd xz; } \
-            || { [[ "${pkg}" == dnsutils  ]] && _have_cmd dig; } \
-            || { [[ "${pkg}" == iproute2  ]] && _have_cmd ip; } \
-            || { [[ "${pkg}" == ca-certificates ]] && [[ -d /etc/ssl/certs ]]; }; then
-            continue
-        fi
-        missing+=("${pkg}")
-    done
-    if (( ${#missing[@]} == 0 )); then
-        log_ok "基础依赖已齐全"
+    # 按发行版组装必需依赖的真实包名
+    local required_pkgs
+    if [[ "${OS_FAMILY}" == "rhel" ]] || [[ "${_PKG_MGR}" == "dnf" || "${_PKG_MGR}" == "yum" ]]; then
+        required_pkgs=(ca-certificates curl jq xz iproute bind-utils)
     else
-        for pkg in "${missing[@]}"; do
-            rc=0
-            install_pkg "${pkg}" || rc=$?
-            case "${rc}" in
-                0)   log_ok "已安装：$(_pkg_name_for_distro "${pkg}")" ;;
-                124) log_warn "安装 ${pkg} 超时（180s）"; failed+=("${pkg}（超时）") ;;
-                *)   log_warn "安装 ${pkg} 失败（rc=${rc}），可能影响部分功能"
-                     failed+=("${pkg}（rc=${rc}）") ;;
-            esac
-        done
+        required_pkgs=(ca-certificates curl jq xz-utils iproute2 dnsutils)
     fi
 
-    # qrencode 可选
+    # 已经满足时直接跳过批量安装，避免无谓 apt/dnf 调用
+    local pre_missing
+    pre_missing="$(_required_cmds_missing)"
+    if [[ -z "${pre_missing}" ]]; then
+        log_ok "必需依赖已齐全，跳过批量安装"
+    else
+        log_info "缺失必需命令：${pre_missing}，将一次性批量安装：${required_pkgs[*]}"
+        local rc=0
+        _install_required_pkgs_batch "${required_pkgs[@]}" || rc=$?
+        case "${rc}" in
+            0)   log_ok "批量安装必需依赖完成" ;;
+            124) log_warn "批量安装必需依赖超时（120s）"
+                 _print_source_diagnostic_hint ;;
+            *)   log_warn "批量安装必需依赖失败（rc=${rc}）"
+                 _print_source_diagnostic_hint ;;
+        esac
+    fi
+
+    # 安装后再次确认必需命令是否齐全
+    local post_missing
+    post_missing="$(_required_cmds_missing)"
+    if [[ -n "${post_missing}" ]]; then
+        log_error "缺少必需依赖，无法继续安装 SS2022：${post_missing}"
+        log_warn "请手动执行上述命令补齐依赖后重试。"
+        return 1
+    fi
+
+    # 提示可选依赖状态，但绝不在主流程里 apt/dnf 安装
     if ! _have_cmd qrencode; then
-        log_info "尝试安装 qrencode（可选；缺失只影响二维码功能）"
-        if install_pkg qrencode; then
-            log_ok "已安装：qrencode"
-        else
-            log_warn "qrencode 安装失败，二维码生成功能将不可用；主服务不受影响"
-        fi
+        log_info "未检测到 qrencode（可选）。缺失仅影响终端二维码显示，不影响 SS2022 安装。"
+        log_info "如需，可手动安装：apt-get install -y qrencode  或  dnf install -y qrencode"
     fi
 
-    if (( ${#failed[@]} > 0 )); then
-        log_warn "以下依赖未能安装："
-        printf '  - %s\n' "${failed[@]}"
-        log_warn "请检查软件源是否可用，或手动安装上述包"
-    fi
     log_ok "依赖检查完成"
+    return 0
 }
 
 # -----------------------------------------------------------------------------
@@ -1202,7 +1248,10 @@ suggest_close_port() {
 # -----------------------------------------------------------------------------
 install_ss2022() {
     log_step "安装 / 重装 SS2022 (shadowsocks-rust)"
-    install_dependencies
+    if ! install_dependencies; then
+        log_error "必需依赖缺失，已中止 SS2022 安装"
+        return 1
+    fi
     ensure_project_dirs
     hint_time_before_install
 
@@ -1417,7 +1466,10 @@ enable_shadowtls() {
     if [[ "$(info_get '.ss2022.installed')" != "true" ]]; then
         log_error "请先安装 SS2022"; return 1
     fi
-    install_dependencies
+    if ! install_dependencies; then
+        log_error "必需依赖缺失，已中止 ShadowTLS 启用"
+        return 1
+    fi
     ensure_project_dirs
     hint_time_before_install
 
@@ -2524,20 +2576,17 @@ gen_mihomo_only() {
 # 二维码生成（仅终端显示，不写 PNG）
 # -----------------------------------------------------------------------------
 # generate_terminal_qrcode <content>
-#   - qrencode 缺失时尝试 apt 安装一次；仍失败则只输出文字链接，返回 1（不退出）
+#   - qrencode 缺失时只提示并输出文字链接，绝不自动 apt/dnf 安装（避免主流程被阻塞 180s）
 #   - 不接收文件路径；不保存任何文件
 generate_terminal_qrcode() {
     local content="$1"
     if ! command -v qrencode >/dev/null 2>&1; then
-        log_warn "qrencode 未安装，尝试 apt 安装..."
-        if command -v apt-get >/dev/null 2>&1; then
-            DEBIAN_FRONTEND=noninteractive apt-get install -y qrencode >/dev/null 2>&1 || true
-        fi
-        if ! command -v qrencode >/dev/null 2>&1; then
-            log_warn "qrencode 安装失败，将仅输出文字链接"
-            printf '链接：%s\n' "${content}"
-            return 1
-        fi
+        log_warn "未检测到 qrencode，无法显示终端二维码。"
+        log_info "当前先显示完整文字链接；如需二维码可稍后手动安装："
+        log_info "  Debian/Ubuntu: apt-get update && apt-get install -y qrencode"
+        log_info "  CentOS/RHEL  : dnf install -y qrencode"
+        printf '链接：%s\n' "${content}"
+        return 1
     fi
     if (( ${#content} > 300 )); then
         log_warn "链接长度 ${#content} 较长，部分客户端可能无法扫描该二维码"
@@ -2970,19 +3019,46 @@ sync_time_auto() {
         *)
             if [[ -n "${unit}" ]]; then
                 log_warn "通过 ${unit} 后仍未确认同步"
+            else
+                log_warn "未检测到 systemd-timesyncd / chronyd / chrony。"
+                log_warn "本脚本默认不会自动安装 chrony，避免在网络源慢时长时间卡住。"
+                log_info "如需手动安装时间同步服务，请执行以下命令之一："
+                log_info "  Debian/Ubuntu:"
+                log_info "    apt-get update && apt-get install -y chrony"
+                log_info "    systemctl enable --now chrony"
+                log_info "  CentOS/RHEL:"
+                log_info "    dnf install -y chrony"
+                log_info "    systemctl enable --now chronyd"
             fi
-            read -r -p "是否安装 chrony 作为时间同步后备? [y/N]: " a
+            # 默认 No，二次确认
+            local a a2
+            read -r -p "是否现在尝试安装 chrony 作为时间同步后备? [y/N]: " a
             if [[ "${a}" =~ ^[Yy]$ ]]; then
-                # 用 install_pkg 统一处理（自动选 apt-get / dnf / yum，带超时）
-                if install_pkg chrony; then
-                    # chrony 在 Debian/Ubuntu 服务名常为 chrony；在 RHEL 系常为 chronyd
-                    systemctl enable --now chronyd >/dev/null 2>&1 \
-                      || systemctl enable --now chrony >/dev/null 2>&1 \
-                      || true
-                    sleep 1
-                    command -v chronyc >/dev/null 2>&1 && chronyc tracking 2>/dev/null || true
+                read -r -p "确认执行 apt/dnf 安装 chrony（最多等待 120 秒）? [y/N]: " a2
+                if [[ "${a2}" =~ ^[Yy]$ ]]; then
+                    # 用 install_pkg 统一处理（自动选 apt-get / dnf / yum，带 120s 超时）
+                    local rc=0
+                    install_pkg chrony || rc=$?
+                    case "${rc}" in
+                        0)
+                            # chrony 在 Debian/Ubuntu 服务名常为 chrony；在 RHEL 系常为 chronyd
+                            systemctl enable --now chronyd >/dev/null 2>&1 \
+                              || systemctl enable --now chrony >/dev/null 2>&1 \
+                              || true
+                            sleep 1
+                            command -v chronyc >/dev/null 2>&1 && chronyc tracking 2>/dev/null || true
+                            ;;
+                        124)
+                            log_warn "chrony 安装超时（120s），软件源响应过慢，已放弃。"
+                            log_warn "返回菜单，时间同步功能未启用，主脚本其它功能不受影响。"
+                            ;;
+                        *)
+                            log_error "chrony 安装失败（rc=${rc}），已放弃。"
+                            log_warn "返回菜单，时间同步功能未启用，主脚本其它功能不受影响。"
+                            ;;
+                    esac
                 else
-                    log_error "chrony 安装失败"
+                    log_info "已取消 chrony 安装"
                 fi
             else
                 log_info "已跳过 chrony 安装"

@@ -24,11 +24,12 @@
 ## 1. 一行安装 install.sh
 
 - ☐ 非 root 直接跑 `install.sh` → 提示 "请使用 root 用户运行：sudo -i" 并退出
-- ☐ root 跑 `install.sh`，缺少 `curl` → 自动 `apt-get install -y curl ca-certificates`
+- ☐ root 跑 `install.sh`，缺少 `curl` → 自动 `apt-get install -y curl ca-certificates`（v1.0.1：索引 60s 超时 / 安装 120s 超时；超时打印软件源诊断和手动命令，不再 180s 卡住）
 - ☐ `install.sh` 下载主脚本到 `/tmp/ss2022-shadowtls-manager.sh.tmp.$$` → 跑 `bash -n` 通过 → 备份旧版本 → 安装到 `/root/ss2022-shadowtls-manager.sh` → `exec` 进入主菜单
 - ☐ 故意制造下载失败（网络阻断 / 私有仓库）：旧版本不被覆盖；提示"如果仓库为 Private，请使用 scp 或 git pull 手动同步"
 - ☐ `install.sh` 不写 `/usr/local/bin/ss2022`（快捷命令由主脚本 SS2022 安装成功后才创建）
 - ☐ `install.sh` 不安装 systemd 服务、不动 nftables、不动防火墙
+- ☐ 软件源不可用情景：手动让 apt/dnf 阻塞 → 总等待应 ≤ 60 + 120 = 180 秒，并最终给出明确 "请手动执行 apt-get install -y ca-certificates curl" 等命令
 
 ---
 
@@ -41,6 +42,15 @@
 - ☐ 时间同步未配置时显示 "未检测"；已同步显示 "已同步"
 
 ---
+
+## 2.5 依赖安装（v1.0.1 修复点）
+
+- ☐ Debian/Ubuntu 全新机器：主菜单 1 进入安装时，依赖阶段一次性执行 `apt-get install -y ca-certificates curl jq xz-utils iproute2 dnsutils`（一行批量，120 秒整体超时），不再逐包等 180 秒
+- ☐ CentOS/RHEL 9：依赖阶段一次性执行 `dnf install -y ca-certificates curl jq xz iproute bind-utils`（120 秒超时）
+- ☐ 必需命令齐全时：依赖阶段直接打印 "必需依赖已齐全，跳过批量安装"，零等待
+- ☐ 必需依赖缺失且批量安装失败/超时：日志清晰显示 "缺少必需依赖，无法继续安装 SS2022：xxx" 并列出软件源诊断 + 手动命令，主流程终止，不继续走 ssserver 下载
+- ☐ qrencode 缺失时：依赖阶段只提示 "未检测到 qrencode（可选）" 与手动安装命令，**不**自动 apt/dnf 安装；不阻塞 SS2022 安装
+- ☐ `apt-get update` / `dnf makecache` 索引更新：最多 60 秒，超时给出 "软件源响应过慢（60s 超时）" 警告但继续尝试已有索引
 
 ## 3. 一键安装 SS2022
 
@@ -113,6 +123,9 @@
   - ☐ 切换后 SS2022 / ShadowTLS（如启用）自动重启
 - ☐ 4) 查看时间状态：显示本地时间 / UTC / 时区 / NTP / synchronized / RTC / 服务状态
 - ☐ 5) 自动校准时间：执行前/后快照；若已同步 → log_ok "系统时间本来已经同步，所以时间显示可能不会明显变化"
+  - ☐ (v1.0.1) 系统没有任何 NTP 服务（无 timesyncd / chronyd / chrony unit）：脚本**不**默认安装 chrony；提示完整手动命令（含 `apt-get install -y chrony` + `systemctl enable --now chrony` 或 dnf 等价物）
+  - ☐ (v1.0.1) 提示询问 `是否现在尝试安装 chrony? [y/N]` 默认 No（直接回车 = 跳过）
+  - ☐ (v1.0.1) 输入 y 后再二次确认 `[y/N]`；只有连续两个 y 才执行安装；安装最多 120 秒；超时仅警告并返回菜单，不卡死
 - ☐ 6) 设置时区：
   - ☐ 选 0 → **直接返回**，不显示错误，不需要多按回车（v0.1.5 重点修复点）
   - ☐ 选 1-5 标准时区 → 显示修改前/后时区
@@ -212,7 +225,7 @@
 ## 14. 反馈模板（用户报 bug 时请附）
 
 ```
-版本：v1.0.0
+版本：v1.0.1
 系统：Debian 12 / Ubuntu 22.04 / ...
 架构：x86_64 / aarch64
 

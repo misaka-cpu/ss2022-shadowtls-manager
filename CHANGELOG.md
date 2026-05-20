@@ -8,6 +8,25 @@
 
 （暂无）
 
+## [v1.0.1] — 安装体验修复
+
+### Fixed
+- **必需依赖安装不再逐包卡 180 秒**：`install_dependencies` 改为按发行版组装 `ca-certificates curl jq xz(-utils) iproute(2) bind-utils/dnsutils` 一次性批量传给 `apt-get install` / `dnf install` / `yum install`，整体 120 秒超时；索引更新（`apt-get update` / `dnf makecache`）也从 120s 收紧到 60s。在 Debian/Ubuntu 实测下，xz-utils 等单包等 180s 的体验问题不再出现
+- **qrencode 不再阻塞 SS2022 安装**：从必备依赖中剔除，主流程默认不再尝试 `apt install qrencode`；缺失时只显示"未检测到 qrencode，无法显示终端二维码"并给出手动命令，同时正常输出完整文字链接，不中断安装/启用流程
+- **chrony 默认不再自动安装**：`sync_time_auto` 在未检测到 `systemd-timesyncd` / `chronyd` / `chrony` 时打印明确的手动安装命令（含 `systemctl enable --now`），询问"是否现在尝试安装 chrony? [y/N]" 默认 No，并加一道二次确认 `[y/N]`；用户明确 Yes 时调用 `install_pkg chrony` 走 120s 超时，超时/失败只警告并返回菜单，绝不再无限等待
+- **`install.sh` 同步收紧超时**：`apt-get update` / `dnf makecache` / `yum makecache` 60 秒；`apt-get install curl ca-certificates` / `dnf install` / `yum install` 120 秒；超时或失败统一输出软件源诊断提示与手动命令
+
+### Changed
+- 必需依赖集合明确缩小为：`ca-certificates curl jq xz iproute dig`（来自 `bind-utils` / `dnsutils`）；可选依赖：`qrencode`（仅二维码）、`chrony`（仅时间同步备选）
+- 批量安装结束后会再次校验必需命令是否齐全：仍缺失则直接终止当前 SS2022 / ShadowTLS 启用流程，提示"缺少必需依赖，无法继续安装 SS2022"；只缺可选依赖时主流程继续
+- `apt-get update` / `dnf makecache` / 安装超时统一打印软件源诊断建议：网络、DNS、IPv6、镜像源、软件源配置五项排查方向，并附手动命令
+- 版本号从 `v1.0.0` 升级到 `v1.0.1`；README / 主菜单标题 / 状态栏同步
+
+### Safety
+- 不修改 nftables 规则与 `/etc/nftables.conf`；不动 `nftables-nat-rust-enhanced` 项目
+- 不在二维码渲染路径中悄悄调用 `apt-get install`；不在时间同步路径中悄悄安装 chrony
+- 所有新增安装路径都带 `timeout`，并在 124（超时）/ 非 0（失败）下打印手动命令，不静默吞错
+
 ## [v1.0.0] — 第一个稳定版
 
 ### Added

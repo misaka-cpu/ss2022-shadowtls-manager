@@ -4,7 +4,7 @@ SS2022 + ShadowTLS v3 一体化管理脚本，适用于 Debian / Ubuntu / CentOS
 
 ## 当前状态
 
-- 当前版本：**v1.0.0**
+- 当前版本：**v1.0.1**
 - 状态：**稳定版**
 - 已在 Debian / Ubuntu / CentOS 9 上经过实测；仍建议先在干净 Debian / Ubuntu / CentOS 测试后再用于长期环境
 
@@ -16,7 +16,7 @@ SS2022 + ShadowTLS v3 一体化管理脚本，适用于 Debian / Ubuntu / CentOS
 4. **安装/启用完成直接显示完整链接 + 终端二维码**：默认只在终端显示，**不保存 PNG 文件**，无需再去其它菜单
 5. **支持 IPv4 / IPv6 / 双栈**：URI 自动加 `[ ]`、`[::]:port` 监听拼接精确
 6. **支持 sing-box / mihomo / Clash Meta / Shadowrocket / Surge 客户端配置输出**
-7. **支持时间同步检查和校准**：`systemd-timesyncd` 优先，可选 `chrony` 后备
+7. **支持时间同步检查和校准**：`systemd-timesyncd` 优先；缺失 NTP 服务时提示手动安装命令，chrony 默认不自动安装（避免被慢速软件源阻塞）
 8. **统一一键检查更新**：管理脚本本体 + `shadowsocks-rust` + `shadow-tls` + 快捷命令 wrapper 一表呈现，下载后 `bash -n` 校验通过才覆盖
 9. **一键完整卸载**：严格停服 + 残留进程 TERM/KILL + 端口释放检测 + 备份到 `/root/ss2022-shadowtls-backup-<日期>/`，完成后显示详细总结
 10. **安全边界**：
@@ -34,7 +34,7 @@ SS2022 + ShadowTLS v3 一体化管理脚本，适用于 Debian / Ubuntu / CentOS
 - CentOS / RHEL / Rocky / AlmaLinux 9 系列
 - 架构：amd64 / arm64
 
-> v1.0.0 已在 Debian 12、Ubuntu 24.04、CentOS 9 上实测；其它发行版/版本组合可能仍有差异，遇到问题请提 Issue 并附带 `lsb_release -a` 或 `cat /etc/os-release`，以及 `journalctl -u ss2022 -n 80 --no-pager`。
+> v1.0.x 已在 Debian 12、Ubuntu 24.04、CentOS 9 上实测；其它发行版/版本组合可能仍有差异，遇到问题请提 Issue 并附带 `lsb_release -a` 或 `cat /etc/os-release`，以及 `journalctl -u ss2022 -n 80 --no-pager`。
 
 ## 一行安装
 
@@ -84,8 +84,8 @@ ss2022
 ## 主菜单
 
 ```
-SS2022 + ShadowTLS 管理脚本 v1.0.0
-版本：v1.0.0   监听模式：dual   IPv4：x.x.x.x   IPv6：xxxx::xxxx
+SS2022 + ShadowTLS 管理脚本 v1.0.1
+版本：v1.0.1   监听模式：dual   IPv4：x.x.x.x   IPv6：xxxx::xxxx
 SS2022    ：已安装 / 运行中   端口：18388   模式：tcp_only
 ShadowTLS ：已启用 / 运行中   端口：8443    伪装：www.bing.com
 时间同步：已同步   快捷命令：ss2022
@@ -161,7 +161,8 @@ ShadowTLS ：已启用 / 运行中   端口：8443    伪装：www.bing.com
 
 - **v0.1.x-alpha**：内部测试 + 公开测试
 - **v0.2.x-beta**：第一个 beta release，配套 `install.sh` 一行安装
-- **v1.0.0**（当前）：稳定版，已在 Debian / Ubuntu / CentOS 9 上实测；一行安装自动建快捷命令、依赖安装多发行版超时、时间显示明确解释 UTC 偏移、一键完整卸载默认不备份、BBR 状态友好化
+- **v1.0.0**：稳定版，已在 Debian / Ubuntu / CentOS 9 上实测；一行安装自动建快捷命令、依赖安装多发行版超时、时间显示明确解释 UTC 偏移、一键完整卸载默认不备份、BBR 状态友好化
+- **v1.0.1**（当前）：修复依赖安装在网络源慢时长时间卡住的体验问题——必需依赖批量安装并收紧超时（索引 60s / 安装 120s）、qrencode / chrony 改为可选不再默认阻塞、超时/失败给出软件源诊断与手动命令
 - **v1.0.x**：仅修复缺陷，不引入 breaking change
 
 ## 贡献 / 反馈
