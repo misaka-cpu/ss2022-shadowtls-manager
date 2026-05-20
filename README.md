@@ -4,7 +4,7 @@ SS2022 + ShadowTLS v3 一体化管理脚本，适用于 Debian / Ubuntu / CentOS
 
 ## 当前状态
 
-- 当前版本：**v1.0.1**
+- 当前版本：**v1.0.2**
 - 状态：**稳定版**
 - 已在 Debian / Ubuntu / CentOS 9 上经过实测；仍建议先在干净 Debian / Ubuntu / CentOS 测试后再用于长期环境
 
@@ -84,8 +84,8 @@ ss2022
 ## 主菜单
 
 ```
-SS2022 + ShadowTLS 管理脚本 v1.0.1
-版本：v1.0.1   监听模式：dual   IPv4：x.x.x.x   IPv6：xxxx::xxxx
+SS2022 + ShadowTLS 管理脚本 v1.0.2
+版本：v1.0.2   监听模式：dual   IPv4：x.x.x.x   IPv6：xxxx::xxxx
 SS2022    ：已安装 / 运行中   端口：18388   模式：tcp_only
 ShadowTLS ：已启用 / 运行中   端口：8443    伪装：www.bing.com
 时间同步：已同步   快捷命令：ss2022
@@ -162,7 +162,8 @@ ShadowTLS ：已启用 / 运行中   端口：8443    伪装：www.bing.com
 - **v0.1.x-alpha**：内部测试 + 公开测试
 - **v0.2.x-beta**：第一个 beta release，配套 `install.sh` 一行安装
 - **v1.0.0**：稳定版，已在 Debian / Ubuntu / CentOS 9 上实测；一行安装自动建快捷命令、依赖安装多发行版超时、时间显示明确解释 UTC 偏移、一键完整卸载默认不备份、BBR 状态友好化
-- **v1.0.1**（当前）：修复依赖安装在网络源慢时长时间卡住的体验问题——必需依赖批量安装并收紧超时（索引 60s / 安装 120s）、qrencode / chrony 改为可选不再默认阻塞、超时/失败给出软件源诊断与手动命令
+- **v1.0.1**：修复依赖安装在网络源慢时长时间卡住的体验问题——必需依赖批量安装并收紧超时（索引 60s / 安装 120s）、qrencode / chrony 改为可选不再默认阻塞、超时/失败给出软件源诊断与手动命令
+- **v1.0.2**（当前）：修复 v1.0.1 残留逻辑漏洞——必需依赖安装失败 / 超时后脚本必定停止并返回菜单（绝不再输出"依赖检查完成"）、错误提示与软件源诊断改为短行分块、缺失命令以 `jq / xz/xzcat / dig/nslookup / ip / ss` 等用户可读形式列出
 - **v1.0.x**：仅修复缺陷，不引入 breaking change
 
 ## 贡献 / 反馈

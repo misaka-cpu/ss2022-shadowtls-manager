@@ -8,6 +8,29 @@
 
 （暂无）
 
+## [v1.0.2] — 修复 v1.0.1 残留逻辑漏洞
+
+### Fixed
+- **必需依赖安装失败后脚本继续进入"请选择 SS2022 加密方式"** —— 严重逻辑错误：v1.0.1 实测在 Debian/Ubuntu 上 `apt-get install` 120s 超时后仍可能输出 "[成功] 依赖检查完成"。`install_dependencies()` 现在显式分两阶段：
+  - 先记录 `install_rc`（apt/dnf 退出码）
+  - 再以 `_required_cmds_missing` 的**实际命令存在性**作为最终判定，不论 install_rc 是 0 / 124 / 其他
+  - 任一必需命令仍缺失 → `log_error` 并 `return 1`，调用方 `install_ss2022` / `enable_shadowtls` 通过 `if ! install_dependencies; then return 1; fi` 中止安装
+  - "依赖检查完成（必需依赖全部就绪）" 文案仅在所有必需命令都存在时才会输出
+- **错误提示与软件源诊断输出格式杂乱、易被终端折行错位** —— 改为短行分块：可能原因 5 条逐行列出，手动命令按 Debian/Ubuntu 与 CentOS/RHEL 分别两段输出，单行不超过软件包列表本身长度
+
+### Changed
+- `_required_cmds_missing` 改为输出用户可读的标签集合：`curl / jq / xz/xzcat / ip / ss / dig/nslookup`；不再让用户混淆"包名 vs 命令名"
+- `_print_source_diagnostic_hint` 与 `install.sh` 的 `print_source_hint` 统一短行分块格式
+- 必需依赖失败错误信息明确指引用户："请手动修复软件源后执行 apt-get install / dnf install ...，然后重新运行 ss2022"
+- **`sync_time_auto` 进一步轻量化**：未检测到 `systemd-timesyncd` / `chronyd` / `chrony` 时**只**打印分块的手动安装命令（含 `systemctl enable --now`），**删除**原有的 "是否安装 chrony? [y/N]" + 二次确认 + `install_pkg chrony` 120s 安装路径。本脚本任何场景都不再自动安装 chrony，避免菜单被网络源慢阻塞；时间同步永远不影响 SS2022 主安装流程
+- 删除随之失去调用方的死代码：`install_pkg()`（单包安装） 与 `_pkg_name_for_distro()`（包名映射）；批量安装路径在 `install_dependencies` 内显式按发行版组装包列表，逻辑更直白
+- 版本号从 `v1.0.1` 升级到 `v1.0.2`；README / 状态栏 / 主菜单标题同步
+
+### Safety
+- 仍不修改 nftables / `/etc/nftables.conf` / `nftables-nat-rust-enhanced`
+- 主流程与时间同步、二维码三条路径都**不会**自动调用 `apt/dnf/yum install`；只在用户主动进入"一键安装 / 重装"且必需依赖确实缺失时才批量安装
+- 仅修改 `install_dependencies` / `_required_cmds_missing` / `_print_source_diagnostic_hint` / `sync_time_auto` 与 `install.sh` 的 `print_source_hint`；其它流程未触碰
+
 ## [v1.0.1] — 安装体验修复
 
 ### Fixed
