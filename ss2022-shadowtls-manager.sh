@@ -17,7 +17,15 @@ umask 077
 # -----------------------------------------------------------------------------
 # 常量与路径定义（仅允许操作以下路径）
 # -----------------------------------------------------------------------------
-readonly SCRIPT_VERSION="v0.1.4-alpha"
+readonly SCRIPT_VERSION="v0.1.5-alpha"
+
+# 菜单返回码约定（v0.1.5）：
+#   - 普通返回（默认 0 / 非 10）：调用方按既有规则处理 press_any_key
+#   - return 10 (MENU_RC_SKIP_PAUSE)：函数已自行处理 UX，或用户主动取消，
+#     调用方应跳过 press_any_key，立即重绘菜单
+# 该约定目前仅在「可静默取消」的菜单分支使用（如 set_timezone_interactive 的 0 返回），
+# 不影响其它叶子动作的语义。
+readonly MENU_RC_SKIP_PAUSE=10
 readonly SCRIPT_NAME="ss2022-shadowtls-manager"
 
 readonly PROJECT_ROOT="/root/ss2022-shadowtls-manager"
@@ -1046,7 +1054,7 @@ install_ss2022() {
     if [[ ! -x "${SS_BINARY}" ]]; then
         download_shadowsocks_rust "" || { log_error "ssserver 安装失败"; return 1; }
     else
-        log_info "ssserver 已存在，跳过下载（可通过菜单 11 更新）"
+        log_info "ssserver 已存在，跳过下载（可通过主菜单「一键检查更新」更新）"
     fi
 
     write_ss2022_config || return 1
@@ -1093,7 +1101,7 @@ uninstall_ss2022() {
         log_warn "检测到 ShadowTLS 状态：enabled=${stls_enabled:-false} / installed=${stls_installed:-false}"
         log_warn "ShadowTLS 依赖 SS2022 作为后端，若仅卸载 SS2022 将导致 ShadowTLS 悬空（无法转发）"
         echo "请选择处理方式："
-        echo "  1) 取消，先用菜单 21/22 停用或卸载 ShadowTLS，再回来卸载 SS2022（推荐）"
+        echo "  1) 取消，先在「启用 / 配置 ShadowTLS」子菜单停用或卸载 ShadowTLS，再回来卸载 SS2022（推荐）"
         echo "  2) 现在同时卸载 ShadowTLS（将进入 ShadowTLS 卸载流程，仍需输入 YES）"
         echo "  3) 取消"
         read -r -p "选择 [1-3，默认 1]: " dep_choice
@@ -1163,7 +1171,7 @@ enable_shadowtls() {
     if [[ ! -x "${STLS_BINARY}" ]]; then
         download_shadowtls "" || { log_error "shadow-tls 安装失败"; return 1; }
     else
-        log_info "shadow-tls 已存在，跳过下载（可通过菜单 11 之后再次更新）"
+        log_info "shadow-tls 已存在，跳过下载（可通过主菜单「一键检查更新」更新）"
     fi
 
     # 端口
@@ -1230,7 +1238,7 @@ enable_shadowtls() {
 
 ${C_YELLOW}[UDP 提示]${C_RESET} ShadowTLS 主要处理 TCP。启用后建议：
   - 默认推荐 SS2022 改为 tcp_only
-  - 若需 UDP，可在菜单 70 中选择保留单独 UDP 公网端口
+  - 若需 UDP，可在「高级设置 → UDP / BBR 设置」中选择保留单独 UDP 公网端口
   - 不建议依赖 UDP over TCP（性能/兼容性风险）
 EOF
     read -r -p "是否将 SS2022 切换为 tcp_only? [Y/n]: " ans
@@ -2002,7 +2010,7 @@ show_node_info_impl() {
         echo "SS2022 密码    ：${password}"
     else
         echo "SS2022 加密方式：${method}"
-        echo "SS2022 密码    ：$(mask_secret "${password}")  (选项 44 可显示完整)"
+        echo "SS2022 密码    ：$(mask_secret "${password}")  (在「查看节点信息」中确认后可显示完整)"
     fi
 
     if [[ "${stls_enabled}" == "true" ]]; then
@@ -2097,8 +2105,8 @@ gen_ss_uri_only() {
     stls_enabled="$(info_get '.shadowtls.enabled')"
     if [[ "${stls_enabled}" == "true" ]]; then
         # H2-A：ShadowTLS 启用时不再生成"看似普通 SS2022 公网链接但端口指向 ShadowTLS"的误导性 URI
-        log_warn "已启用 ShadowTLS：公网入口为 ShadowTLS，请使用菜单 46 生成 SS + ShadowTLS 合并链接"
-        log_warn "若需 SS2022 内部后端 ss:// 链接（仅本机调试 / 排障使用），可选项 44 查看完整节点信息"
+        log_warn "已启用 ShadowTLS：公网入口为 ShadowTLS，请使用主菜单「查看节点信息」获取 SS + ShadowTLS 合并链接"
+        log_warn "若需 SS2022 内部后端 ss:// 链接（仅本机调试 / 排障使用），请在「查看节点信息」中确认显示完整信息"
         return
     fi
     port="$(info_get '.ss2022.public_port')"
@@ -2110,7 +2118,7 @@ gen_ss_uri_only() {
 
 gen_ss_stls_uri_only() {
     if [[ "$(info_get '.shadowtls.enabled')" != "true" ]]; then
-        log_warn "ShadowTLS 未启用，请先启用 ShadowTLS v3（菜单 20）"
+        log_warn "ShadowTLS 未启用，请先在主菜单「启用 / 配置 ShadowTLS」中启用 ShadowTLS v3"
         return
     fi
     local port; port="$(info_get '.shadowtls.port')"
@@ -2520,14 +2528,14 @@ set_timezone_interactive() {
     read -r -p "选择 [0-6]: " ch
     local tz=""
     case "${ch}" in
-        0) return 0 ;;
+        0) return ${MENU_RC_SKIP_PAUSE} ;;
         1) tz="Asia/Shanghai" ;;
         2) tz="Asia/Hong_Kong" ;;
         3) tz="Asia/Taipei" ;;
         4) tz="Asia/Tokyo" ;;
         5) tz="UTC" ;;
         6) read -r -p "请输入时区（如 Europe/Berlin，留空取消）: " tz
-           [[ -z "${tz}" ]] && { log_info "已取消"; return 0; }
+           [[ -z "${tz}" ]] && return ${MENU_RC_SKIP_PAUSE}
            ;;
         *) log_error "无效选择"; return 1 ;;
     esac
@@ -3043,7 +3051,10 @@ EOF
                ;;
             4) show_time_status ;;
             5) sync_time_auto ;;
-            6) set_timezone_interactive ;;
+            6) set_timezone_interactive
+               # 用户在时区菜单按 0 / 留空 → 返回 MENU_RC_SKIP_PAUSE，跳过 press_any_key
+               [[ $? -eq ${MENU_RC_SKIP_PAUSE} ]] && continue
+               ;;
             0) return ;;
             *) log_error "无效选项：${c}" ;;
         esac
