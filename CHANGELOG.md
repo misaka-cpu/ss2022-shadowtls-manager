@@ -26,7 +26,7 @@
 - 一键检查更新：管理脚本更新成功后**不再继续停留在旧进程里**。所有可用更新跑完后统一在 `check_and_update_all` 末尾询问 "是否立即重新启动新版管理菜单 [Y/n]"：Y → `exec "${target}"` 载入新版本菜单；N → `exit 0` 退出当前旧进程（旧文件已被新版本覆盖，继续运行会出现版本号不一致）
 - `update_manager_script` 不再就地 `exec` / `exit`，仅登记 `_MGR_UPDATE_TARGET` / `_MGR_UPDATE_VERSION`，让同一轮的 `ssserver` / `shadow-tls` / 快捷命令更新都能跑完后再统一重启
 
-## [v0.1.6-alpha] — 实测 bug 修复
+## [v0.1.7-alpha] — 实测 bug 修复
 
 ### Fixed
 - **一键完整卸载后状态残留**：状态栏改用「info + 配置 + service + 二进制」综合判定，任何一项缺失即显示"未安装"，端口/模式归 N/A
@@ -40,7 +40,7 @@
 - `show_install_result_full` / `show_shadowtls_enable_result_full` / `show_recommended_full_uri_and_qrcode_no_confirm`：安装 / 启用动作完成后**直接展示完整链接 + 终端二维码**，无需二次确认
 - 卸载完成总结新增端口释放状态明细，区分"本项目残留"与"非本项目进程"占用
 
-## [v0.1.6-alpha] — 菜单返回 UX
+## [v0.1.7-alpha] — 菜单返回 UX
 
 ### Fixed
 - **设置时区菜单输入 0 返回仍要按一次回车**：引入 `MENU_RC_SKIP_PAUSE=10` 约定；`set_timezone_interactive` 0/留空 → `return 10`，`submenu_network_time` 案 6 守卫 `[[ $? -eq ... ]] && continue` 跳过父 `press_any_key`

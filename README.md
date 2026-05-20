@@ -4,7 +4,7 @@ SS2022 + ShadowTLS v3 一体化管理脚本，适用于 Debian / Ubuntu。
 
 ## 当前状态
 
-- 当前版本：**v0.1.6-alpha**
+- 当前版本：**v0.1.7-alpha**
 - 状态：**公开测试版（alpha）**
 - 建议先在干净的 Debian / Ubuntu 环境测试后再用于生产；本项目仍在迭代
 
@@ -83,8 +83,8 @@ ss2022
 ## 主菜单
 
 ```
-SS2022 + ShadowTLS 管理脚本 v0.1.6-alpha
-版本：v0.1.6-alpha   监听模式：dual   IPv4：x.x.x.x   IPv6：xxxx::xxxx
+SS2022 + ShadowTLS 管理脚本 v0.1.7-alpha
+版本：v0.1.7-alpha   监听模式：dual   IPv4：x.x.x.x   IPv6：xxxx::xxxx
 SS2022    ：已安装 / 运行中   端口：18388   模式：tcp_only
 ShadowTLS ：已启用 / 运行中   端口：8443    伪装：www.bing.com
 时间同步：已同步   快捷命令：ss2022
