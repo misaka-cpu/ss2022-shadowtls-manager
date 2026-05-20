@@ -17,7 +17,7 @@ umask 077
 # -----------------------------------------------------------------------------
 # 常量与路径定义（仅允许操作以下路径）
 # -----------------------------------------------------------------------------
-readonly SCRIPT_VERSION="v0.1.0"
+readonly SCRIPT_VERSION="v0.1.1-alpha"
 readonly SCRIPT_NAME="ss2022-shadowtls-manager"
 
 readonly PROJECT_ROOT="/root/ss2022-shadowtls-manager"
@@ -39,6 +39,10 @@ readonly STLS_SERVICE="/etc/systemd/system/shadowtls.service"
 readonly STLS_SERVICE_NAME="shadowtls.service"
 
 readonly SYSCTL_CONF="/etc/sysctl.d/99-ss2022-shadowtls.conf"
+
+# 快捷命令 wrapper（由本项目创建）：通过标记字符串识别归属，避免误删同名文件
+readonly SHORTCUT_PATH="/usr/local/bin/ss2022"
+readonly SHORTCUT_MARKER="managed by ss2022-shadowtls-manager"
 
 # 上游仓库
 readonly SS_RUST_REPO="shadowsocks/shadowsocks-rust"
@@ -874,6 +878,7 @@ install_ss2022() {
     log_step "安装 / 重装 SS2022 (shadowsocks-rust)"
     install_dependencies
     ensure_project_dirs
+    hint_time_before_install
 
     # 现有安装提示
     if [[ "$(info_get '.ss2022.installed')" == "true" ]]; then
@@ -981,6 +986,15 @@ install_ss2022() {
     restart_service "${SS_SERVICE_NAME}" || return 1
     refresh_public_ips
     log_ok "SS2022 安装完成"
+
+    # 安装成功后询问是否创建快捷命令（默认 Y）
+    if ! shortcut_installed; then
+        read -r -p "是否创建快捷命令 ss2022（以后直接输入 ss2022 进入管理菜单）? [Y/n]: " _ans
+        if [[ ! "${_ans}" =~ ^[Nn]$ ]]; then
+            install_shortcut_command || log_warn "快捷命令安装失败（可稍后在「高级设置」中重试）"
+        fi
+    fi
+
     show_node_info
 }
 
@@ -1060,6 +1074,7 @@ enable_shadowtls() {
     fi
     install_dependencies
     ensure_project_dirs
+    hint_time_before_install
 
     if [[ ! -x "${STLS_BINARY}" ]]; then
         download_shadowtls "" || { log_error "shadow-tls 安装失败"; return 1; }
@@ -1212,6 +1227,240 @@ uninstall_shadowtls() {
         log_info "SS2022 未安装，跳过恢复 SS2022 公网监听与重启 ss2022.service"
     fi
     log_ok "ShadowTLS 已卸载"
+}
+
+# -----------------------------------------------------------------------------
+# 快捷命令 wrapper：/usr/local/bin/ss2022
+# 用 wrapper 脚本而非软链接；通过标记 ${SHORTCUT_MARKER} 识别归属
+# -----------------------------------------------------------------------------
+
+# 返回 0 表示本项目的快捷命令已安装；其它情况返回 1
+shortcut_installed() {
+    [[ -f "${SHORTCUT_PATH}" ]] && grep -q "${SHORTCUT_MARKER}" "${SHORTCUT_PATH}" 2>/dev/null
+}
+
+# 创建 / 覆盖更新 wrapper
+install_shortcut_command() {
+    log_step "安装快捷命令 ${SHORTCUT_PATH}"
+    # 解析当前脚本真实路径
+    local real_path
+    real_path="$(readlink -f -- "${BASH_SOURCE[0]}" 2>/dev/null)"
+    if [[ -z "${real_path}" || ! -f "${real_path}" ]]; then
+        real_path="/root/ss2022-shadowtls-manager/ss2022-shadowtls-manager.sh"
+        log_warn "无法解析当前脚本真实路径，回退到默认：${real_path}"
+    fi
+
+    # 已存在文件的归属判定
+    if [[ -e "${SHORTCUT_PATH}" ]]; then
+        if grep -q "${SHORTCUT_MARKER}" "${SHORTCUT_PATH}" 2>/dev/null; then
+            log_info "已存在本项目创建的快捷命令，将覆盖更新"
+        else
+            log_error "${SHORTCUT_PATH} 已存在且不是本项目创建（缺少标记），拒绝覆盖"
+            suggest "请手动检查该文件后再决定是否安装快捷命令"
+            return 1
+        fi
+    fi
+
+    # 通过临时文件写入，再 install -m 0755
+    local tmp
+    if ! tmp="$(mktemp -t ss2022-wrap.XXXXXX 2>/dev/null)" \
+            || [[ -z "${tmp}" || ! -f "${tmp}" ]]; then
+        log_error "创建临时文件失败"
+        return 1
+    fi
+    cat > "${tmp}" <<EOF
+#!/usr/bin/env bash
+# ${SHORTCUT_MARKER}
+exec "${real_path}" "\$@"
+EOF
+    if ! install -m 0755 "${tmp}" "${SHORTCUT_PATH}"; then
+        safe_remove_tmpfile "${tmp}"
+        log_error "安装快捷命令失败：${SHORTCUT_PATH}"
+        return 1
+    fi
+    safe_remove_tmpfile "${tmp}"
+    log_ok "已安装快捷命令：${SHORTCUT_PATH}"
+    log_info "以后可以直接输入 ss2022 打开管理菜单"
+}
+
+# 仅删除带本项目标记的 wrapper；其它同名文件一律不动
+remove_shortcut_command() {
+    log_step "删除快捷命令 ${SHORTCUT_PATH}"
+    if [[ ! -e "${SHORTCUT_PATH}" ]]; then
+        log_info "${SHORTCUT_PATH} 不存在，跳过"
+        return 0
+    fi
+    if ! grep -q "${SHORTCUT_MARKER}" "${SHORTCUT_PATH}" 2>/dev/null; then
+        log_error "${SHORTCUT_PATH} 不是本项目创建（缺少标记 \"${SHORTCUT_MARKER}\"），拒绝删除"
+        suggest "请手动检查该文件后再决定是否删除"
+        return 1
+    fi
+    if rm -f -- "${SHORTCUT_PATH}"; then
+        log_ok "已删除：${SHORTCUT_PATH}"
+    else
+        log_error "删除失败：${SHORTCUT_PATH}"
+        return 1
+    fi
+}
+
+# 一键完整卸载：仅删除本项目创建的内容；不动 nftables / apt 包 / 其它代理
+uninstall_all() {
+    log_step "一键完整卸载"
+    cat <<EOF
+将停止并禁用以下服务（如存在）：
+  - ${STLS_SERVICE_NAME}
+  - ${SS_SERVICE_NAME}
+
+将删除以下路径（仅限本项目）：
+  - ${STLS_BINARY}
+  - ${SS_BINARY}
+  - ${SS_CONFIG}
+  - ${STLS_ENV}
+  - ${SS_SERVICE}
+  - ${STLS_SERVICE}
+  - ${PROJECT_ETC}/        （含 info.json / qrcode / backup）
+  - ${SS_DIR}/             （仅当为空时删除目录本身）
+  - ${STLS_DIR}/           （仅当为空时删除目录本身）
+  - ${SHORTCUT_PATH}        （仅当包含标记 "${SHORTCUT_MARKER}" 时；否则跳过）
+
+不会删除：
+  - 任何 nftables 规则 / /etc/nftables.conf
+  - nftables-nat-rust-enhanced 项目
+  - /usr/local/sbin/ 下非本项目文件
+  - 其它代理程序
+  - 已安装的 apt 包（curl / jq / qrencode / chrony / wget 等）
+  - 防火墙的 ufw / firewalld 端口规则（请按需自行清理）
+
+卸载前会将所有现存配置备份到 /root/ss2022-shadowtls-backup-<日期>/
+EOF
+    read -r -p "请输入 YES 确认完整卸载： " ans
+    [[ "${ans}" == "YES" ]] || { log_info "已取消"; return; }
+
+    # 1) 备份
+    local ts backup_dir
+    ts="$(date +%Y%m%d-%H%M%S)"
+    backup_dir="/root/ss2022-shadowtls-backup-${ts}"
+    if mkdir -p "${backup_dir}" 2>/dev/null; then
+        chmod 700 "${backup_dir}" 2>/dev/null || true
+        local src
+        for src in "${SS_CONFIG}" "${STLS_ENV}" "${SS_SERVICE}" "${STLS_SERVICE}" "${PROJECT_INFO}"; do
+            [[ -f "${src}" ]] && cp -a -- "${src}" "${backup_dir}/" 2>/dev/null && \
+                log_info "已备份：${src}"
+        done
+        # 备份目录中所有备份/二维码副本（如有）
+        if [[ -d "${PROJECT_BACKUP_DIR}" ]]; then
+            cp -a -- "${PROJECT_BACKUP_DIR}" "${backup_dir}/" 2>/dev/null && \
+                log_info "已备份：${PROJECT_BACKUP_DIR}"
+        fi
+        log_ok "备份完成：${backup_dir}"
+    else
+        log_warn "创建备份目录失败：${backup_dir}（继续卸载）"
+    fi
+
+    # 2) 停止并禁用服务（不存在则跳过）
+    if systemctl list-unit-files 2>/dev/null | grep -q "^${STLS_SERVICE_NAME}"; then
+        systemctl disable --now "${STLS_SERVICE_NAME}" >/dev/null 2>&1 || true
+        log_info "已停止并禁用：${STLS_SERVICE_NAME}"
+    else
+        log_info "跳过（不存在）：${STLS_SERVICE_NAME}"
+    fi
+    if systemctl list-unit-files 2>/dev/null | grep -q "^${SS_SERVICE_NAME}"; then
+        systemctl disable --now "${SS_SERVICE_NAME}" >/dev/null 2>&1 || true
+        log_info "已停止并禁用：${SS_SERVICE_NAME}"
+    else
+        log_info "跳过（不存在）：${SS_SERVICE_NAME}"
+    fi
+
+    # 3) 删除本项目文件（每个路径明确写出，避免宽泛 rm -rf）
+    local removed=()
+    local skipped=()
+
+    _safe_rm_file() {
+        local p="$1"
+        if [[ -e "${p}" || -L "${p}" ]]; then
+            rm -f -- "${p}" 2>/dev/null && removed+=("${p}") || skipped+=("${p}（删除失败）")
+        else
+            skipped+=("${p}（不存在）")
+        fi
+    }
+
+    _safe_rm_file "${STLS_SERVICE}"
+    _safe_rm_file "${SS_SERVICE}"
+    _safe_rm_file "${STLS_ENV}"
+    _safe_rm_file "${SS_CONFIG}"
+    _safe_rm_file "${STLS_BINARY}"
+    _safe_rm_file "${SS_BINARY}"
+
+    # 快捷命令 wrapper：必须带项目标记才删除，否则跳过保护
+    if [[ -e "${SHORTCUT_PATH}" ]]; then
+        if grep -q "${SHORTCUT_MARKER}" "${SHORTCUT_PATH}" 2>/dev/null; then
+            if rm -f -- "${SHORTCUT_PATH}" 2>/dev/null; then
+                removed+=("${SHORTCUT_PATH}")
+            else
+                skipped+=("${SHORTCUT_PATH}（删除失败）")
+            fi
+        else
+            skipped+=("${SHORTCUT_PATH}（不是本项目创建，保留）")
+        fi
+    else
+        skipped+=("${SHORTCUT_PATH}（不存在）")
+    fi
+
+    # 4) PROJECT_ETC：项目自有目录，整目录删除（路径前缀严格校验）
+    if [[ -d "${PROJECT_ETC}" && "${PROJECT_ETC}" == "/etc/ss2022-shadowtls-manager" ]]; then
+        rm -rf -- "${PROJECT_ETC}" && removed+=("${PROJECT_ETC}/") || skipped+=("${PROJECT_ETC}/（删除失败）")
+    else
+        skipped+=("${PROJECT_ETC}/（不存在或路径不匹配，跳过）")
+    fi
+
+    # 5) SS_DIR / STLS_DIR：仅当为空时删除（其它进程可能仍有文件）
+    if [[ -d "${SS_DIR}" ]]; then
+        if rmdir "${SS_DIR}" 2>/dev/null; then
+            removed+=("${SS_DIR}/")
+        else
+            skipped+=("${SS_DIR}/（非空或删除失败，保留）")
+        fi
+    fi
+    if [[ -d "${STLS_DIR}" ]]; then
+        if rmdir "${STLS_DIR}" 2>/dev/null; then
+            removed+=("${STLS_DIR}/")
+        else
+            skipped+=("${STLS_DIR}/（非空或删除失败，保留）")
+        fi
+    fi
+
+    # 6) systemd 重载
+    systemctl daemon-reload >/dev/null 2>&1 || true
+
+    # 7) 报告
+    hr
+    log_ok "卸载完成"
+    echo "备份目录：${backup_dir}"
+    echo
+    echo "已删除路径："
+    if (( ${#removed[@]} > 0 )); then
+        printf '  - %s\n' "${removed[@]}"
+    else
+        echo "  (无)"
+    fi
+    echo
+    echo "跳过 / 保留路径："
+    if (( ${#skipped[@]} > 0 )); then
+        printf '  - %s\n' "${skipped[@]}"
+    else
+        echo "  (无)"
+    fi
+    hr
+    cat <<EOF
+未删除内容说明：
+  - 未触碰 nftables 规则与 /etc/nftables.conf
+  - 未触碰 nftables-nat-rust-enhanced 项目
+  - 未卸载 apt 包（curl / jq / qrencode / chrony 等仍保留，可按需 apt remove）
+  - 未清理 ufw / firewalld 端口规则；若不再使用，请自行检查并删除：
+      * SS2022 公网端口
+      * ShadowTLS 公网端口
+  - sysctl BBR 配置文件 ${SYSCTL_CONF}（若曾启用）仍保留，可手动删除后 sysctl --system
+EOF
 }
 
 # -----------------------------------------------------------------------------
@@ -1802,52 +2051,49 @@ gen_mihomo_only() {
 # -----------------------------------------------------------------------------
 # 二维码生成
 # -----------------------------------------------------------------------------
+# 仅在终端显示二维码；不再写 PNG 文件
+# 参数：content
+# qrencode 缺失时尝试 apt 安装一次；仍失败则只输出文字链接并返回 1（不退出）
 generate_qrcode() {
-    local content="$1" outfile="$2" show_terminal="${3:-0}"
+    local content="$1"
     if ! command -v qrencode >/dev/null 2>&1; then
-        log_warn "qrencode 未安装，跳过二维码生成"
-        return 1
+        log_warn "qrencode 未安装，尝试 apt 安装..."
+        if command -v apt-get >/dev/null 2>&1; then
+            DEBIAN_FRONTEND=noninteractive apt-get install -y qrencode >/dev/null 2>&1 || true
+        fi
+        if ! command -v qrencode >/dev/null 2>&1; then
+            log_warn "qrencode 安装失败，将仅输出文字链接"
+            printf '链接：%s\n' "${content}"
+            return 1
+        fi
     fi
-    # 长度提醒
     if (( ${#content} > 300 )); then
         log_warn "链接长度 ${#content} 较长，部分客户端可能无法扫描该二维码"
     fi
-    # PNG
-    if ! qrencode -o "${outfile}" -s 6 -m 2 "${content}" 2>/dev/null; then
-        log_warn "生成 PNG 二维码失败：${outfile}"
-        return 1
+    local cols
+    cols="$(tput cols 2>/dev/null || echo 80)"
+    if (( cols < 60 )); then
+        log_warn "终端宽度 ${cols} 较窄，二维码可能无法完整显示，请放大窗口"
     fi
-    log_ok "已保存二维码：${outfile}"
-    if [[ "${show_terminal}" == "1" ]]; then
-        local cols
-        cols="$(tput cols 2>/dev/null || echo 80)"
-        if (( cols < 60 )); then
-            log_warn "终端宽度 ${cols} 较窄，二维码可能无法完整显示，请放大窗口"
-        fi
-        qrencode -t ANSIUTF8 "${content}" || log_warn "终端二维码渲染失败"
+    if ! qrencode -t ANSIUTF8 "${content}"; then
+        log_warn "终端二维码渲染失败，将输出文字链接"
+        printf '链接：%s\n' "${content}"
+        return 1
     fi
     return 0
 }
 
 confirm_show_secret() {
-    read -r -p "是否显示完整敏感内容（密码 / 完整链接 / 终端二维码）? [y/N]: " a
+    read -r -p "是否显示完整敏感内容（密码 / 完整链接）? [y/N]: " a
     [[ "${a}" =~ ^[Yy]$ ]]
 }
 
-# H2-F：明确告知 PNG 包含完整链接和密码，用户确认后才允许保存
-# 返回 0 表示用户同意保存 PNG；非 0 表示拒绝
-confirm_save_qr_png() {
-    log_warn "二维码 PNG 文件会包含完整节点链接（含密码与 ShadowTLS 参数）"
-    log_warn "保存位置：${PROJECT_QRCODE_DIR}/（目录权限 0700，仅 root 可读）"
-    log_warn "拒绝则不生成 PNG，仅在终端打印遮蔽摘要"
-    read -r -p "是否生成 PNG 二维码? [y/N]: " a
+# 二维码安全提示，确认后才在终端显示；默认不写 PNG
+confirm_show_qr_terminal() {
+    log_warn "二维码包含完整节点链接和密码，请勿截图发给他人"
+    log_warn "默认不会保存 PNG 文件，仅在当前终端显示"
+    read -r -p "是否在终端显示二维码? [y/N]: " a
     [[ "${a}" =~ ^[Yy]$ ]]
-}
-
-# 打印一行遮蔽摘要（不暴露完整 URI / 密码）
-print_qr_masked_entry() {
-    local label="$1" addr="$2" port="$3"
-    printf '  - %s: %s:%s  (链接与密码已遮蔽，未生成 PNG)\n' "${label}" "${addr}" "${port}"
 }
 
 qr_ss2022() {
@@ -1857,76 +2103,48 @@ qr_ss2022() {
 
     # H2-A：ShadowTLS 启用时不再生成"端口指向 ShadowTLS"的普通 SS 链接二维码
     if [[ "${stls_enabled}" == "true" ]]; then
-        log_warn "已启用 ShadowTLS：公网入口为 ShadowTLS，请使用菜单 61 生成 SS + ShadowTLS 二维码"
+        log_warn "已启用 ShadowTLS：公网入口为 ShadowTLS，请使用「显示 SS + ShadowTLS 二维码」"
         log_warn "下方仅能生成 127.0.0.1:本地端口 的 SS2022 内部调试二维码（不能作为公网节点）"
         read -r -p "是否生成内部调试二维码? [y/N]: " a
         [[ "${a}" =~ ^[Yy]$ ]] || { log_info "已取消"; return; }
-        local _local_port _uri _f
+        confirm_show_qr_terminal || { log_info "已取消显示"; return; }
+        local _local_port _uri
         _local_port="$(info_get '.ss2022.local_port')"
         _uri="$(generate_ss_uri "127.0.0.1" "${_local_port}" "SS2022-INTERNAL-DEBUG")"
-        if confirm_save_qr_png; then
-            _f="${PROJECT_QRCODE_DIR}/ss2022-internal-debug.png"
-            local show=0
-            confirm_show_secret && show=1
-            generate_qrcode "${_uri}" "${_f}" "${show}"
-            (( show )) && echo "${_uri}"
-        else
-            log_info "已跳过 PNG 生成。SS2022 内部后端：127.0.0.1:${_local_port}（密码遮蔽）"
-        fi
+        printf '\n=== SS2022 内部调试二维码 (127.0.0.1:%s) ===\n' "${_local_port}"
+        generate_qrcode "${_uri}"
         return
     fi
 
     # ShadowTLS 未启用：常规公网 SS2022 二维码
-    local port save_png=0 show=0
+    confirm_show_qr_terminal || { log_info "已取消显示"; return; }
+    local port
     port="$(info_get '.ss2022.public_port')"
-    if confirm_save_qr_png; then
-        save_png=1
-        confirm_show_secret && show=1
-    fi
     while IFS='|' read -r kind server label; do
         [[ -z "${kind}" ]] && continue
-        local uri f
+        local uri
         uri="$(generate_ss_uri "${server}" "${port}" "SS2022-${label}")"
-        if (( save_png )); then
-            f="${PROJECT_QRCODE_DIR}/ss2022-${kind}.png"
-            generate_qrcode "${uri}" "${f}" "${show}"
-            (( show )) && echo "${uri}"
-        else
-            print_qr_masked_entry "${label}" "${server}" "${port}"
-        fi
+        printf '\n=== SS2022 二维码 (%s: %s:%s) ===\n' "${label}" "${server}" "${port}"
+        generate_qrcode "${uri}"
     done < <(collect_servers)
 }
 
 qr_ss_stls() {
     [[ "$(info_get '.shadowtls.enabled')" == "true" ]] || { log_warn "ShadowTLS 未启用"; return; }
+    confirm_show_qr_terminal || { log_info "已取消显示"; return; }
     local port; port="$(info_get '.shadowtls.port')"
-    local save_png=0 show=0
-    if confirm_save_qr_png; then
-        save_png=1
-        confirm_show_secret && show=1
-    fi
     while IFS='|' read -r kind server label; do
         [[ -z "${kind}" ]] && continue
-        local uri f
+        local uri
         uri="$(generate_ss_shadowtls_uri "${server}" "${port}" "SS-STLS-${label}")"
-        if (( save_png )); then
-            f="${PROJECT_QRCODE_DIR}/ss2022-shadowtls-${kind}.png"
-            generate_qrcode "${uri}" "${f}" "${show}"
-            (( show )) && echo "${uri}"
-        else
-            print_qr_masked_entry "SS-STLS-${label}" "${server}" "${port}"
-        fi
+        printf '\n=== SS + ShadowTLS 二维码 (%s: %s:%s) ===\n' "${label}" "${server}" "${port}"
+        generate_qrcode "${uri}"
     done < <(collect_servers)
 }
 
 qr_all() {
     qr_ss2022
     [[ "$(info_get '.shadowtls.enabled')" == "true" ]] && qr_ss_stls
-}
-
-show_qr_path() {
-    echo "二维码保存目录：${PROJECT_QRCODE_DIR}"
-    ls -lh "${PROJECT_QRCODE_DIR}" 2>/dev/null || true
 }
 
 # -----------------------------------------------------------------------------
@@ -2015,6 +2233,166 @@ show_sys_opt() {
 }
 
 # -----------------------------------------------------------------------------
+# 时间同步 / 时区
+# 准确的系统时间有助于 TLS、证书校验、日志排障和部分客户端兼容性，建议保持时间同步。
+# -----------------------------------------------------------------------------
+
+# 返回时间同步状态：
+#   synced   - timedatectl 报告 System clock synchronized: yes
+#   unsynced - timedatectl 报告 no（NTP 启用与否另算）
+#   unknown  - 无法判定（timedatectl 不可用或解析失败）
+check_time_status() {
+    if ! command -v timedatectl >/dev/null 2>&1; then
+        echo "unknown"
+        return
+    fi
+    local line
+    line="$(timedatectl status 2>/dev/null | grep -Ei 'System clock synchronized' || true)"
+    if [[ -z "${line}" ]]; then
+        echo "unknown"
+    elif echo "${line}" | grep -qi 'yes'; then
+        echo "synced"
+    else
+        echo "unsynced"
+    fi
+}
+
+# 简短中文状态，用于主菜单状态栏
+time_status_label() {
+    case "$(check_time_status)" in
+        synced)   printf '%s已同步%s' "${C_GREEN}" "${C_RESET}" ;;
+        unsynced) printf '%s未同步%s' "${C_YELLOW}" "${C_RESET}" ;;
+        *)        printf '%s未检测%s' "${C_YELLOW}" "${C_RESET}" ;;
+    esac
+}
+
+show_time_status() {
+    log_step "系统时间与时区"
+    echo "date:"
+    date
+    echo
+    if command -v timedatectl >/dev/null 2>&1; then
+        timedatectl status 2>/dev/null || true
+    else
+        log_warn "timedatectl 不可用"
+    fi
+}
+
+sync_time_auto() {
+    log_step "自动校准系统时间"
+    if ! command -v timedatectl >/dev/null 2>&1; then
+        log_error "timedatectl 不可用（systemd 缺失）"
+        suggest "可手动选择安装 chrony 进行时间同步"
+        return 1
+    fi
+    # 优先 systemd-timesyncd
+    if systemctl list-unit-files 2>/dev/null | grep -q '^systemd-timesyncd\.service'; then
+        log_info "尝试启用 NTP（systemd-timesyncd）..."
+        timedatectl set-ntp true 2>/dev/null || log_warn "set-ntp 失败"
+        systemctl restart systemd-timesyncd 2>/dev/null || log_warn "重启 systemd-timesyncd 失败"
+        sleep 1
+        timedatectl status 2>/dev/null | grep -Ei 'NTP|System clock synchronized|Time zone' || true
+        case "$(check_time_status)" in
+            synced)
+                log_ok "时间已同步"
+                return 0
+                ;;
+            *)
+                log_warn "仍未同步，可尝试安装 chrony 作为后备"
+                ;;
+        esac
+    else
+        log_info "未检测到 systemd-timesyncd"
+    fi
+    read -r -p "是否安装 chrony 进行时间同步? [y/N]: " a
+    [[ "${a}" =~ ^[Yy]$ ]] || { log_info "已取消"; return; }
+    if ! command -v apt-get >/dev/null 2>&1; then
+        log_error "未找到 apt-get，无法自动安装 chrony"
+        return 1
+    fi
+    DEBIAN_FRONTEND=noninteractive apt-get update -y >/dev/null 2>&1 || log_warn "apt-get update 失败"
+    if ! DEBIAN_FRONTEND=noninteractive apt-get install -y chrony >/dev/null 2>&1; then
+        log_error "chrony 安装失败"
+        return 1
+    fi
+    systemctl enable --now chrony >/dev/null 2>&1 || systemctl enable --now chronyd >/dev/null 2>&1 || true
+    sleep 1
+    if command -v chronyc >/dev/null 2>&1; then
+        chronyc tracking 2>/dev/null || true
+    fi
+    case "$(check_time_status)" in
+        synced)   log_ok "时间已同步" ;;
+        *)        log_warn "时间仍未同步，请稍后再查看 timedatectl status" ;;
+    esac
+}
+
+set_timezone_interactive() {
+    log_step "设置时区"
+    if ! command -v timedatectl >/dev/null 2>&1; then
+        log_error "timedatectl 不可用"
+        return 1
+    fi
+    echo "常用时区："
+    echo "  1) Asia/Shanghai"
+    echo "  2) Asia/Hong_Kong"
+    echo "  3) Asia/Taipei"
+    echo "  4) Asia/Tokyo"
+    echo "  5) UTC"
+    echo "  6) 自定义输入"
+    read -r -p "选择 [1-6]: " ch
+    local tz=""
+    case "${ch}" in
+        1) tz="Asia/Shanghai" ;;
+        2) tz="Asia/Hong_Kong" ;;
+        3) tz="Asia/Taipei" ;;
+        4) tz="Asia/Tokyo" ;;
+        5) tz="UTC" ;;
+        6)
+            read -r -p "请输入时区（如 Europe/Berlin）: " tz
+            ;;
+        *) log_error "无效选择"; return 1 ;;
+    esac
+    [[ -z "${tz}" ]] && { log_error "时区为空"; return 1; }
+    if ! timedatectl set-timezone "${tz}" 2>/dev/null; then
+        log_error "设置时区失败：${tz}"
+        suggest "确认时区字符串是否合法（参考 timedatectl list-timezones）"
+        return 1
+    fi
+    log_ok "时区已设置为 ${tz}"
+    timedatectl status 2>/dev/null | grep -Ei 'Time zone' || true
+}
+
+set_time_manual() {
+    log_step "手动设置系统时间"
+    if ! command -v timedatectl >/dev/null 2>&1; then
+        log_error "timedatectl 不可用"
+        return 1
+    fi
+    log_warn "手动设置会自动关闭 NTP；建议优先使用「自动校准系统时间」"
+    read -r -p "请输入时间 (YYYY-MM-DD HH:MM:SS): " when
+    if ! [[ "${when}" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}\ [0-9]{2}:[0-9]{2}:[0-9]{2}$ ]]; then
+        log_error "格式错误，应为 YYYY-MM-DD HH:MM:SS"
+        return 1
+    fi
+    if ! timedatectl set-time "${when}" 2>/dev/null; then
+        log_error "设置时间失败"
+        suggest "请确认 NTP 已关闭：timedatectl set-ntp false"
+        return 1
+    fi
+    log_ok "系统时间已设置为：${when}"
+    date
+}
+
+# 安装前的时间提示（不强制阻止）
+hint_time_before_install() {
+    case "$(check_time_status)" in
+        synced)   : ;;
+        unsynced) log_warn "系统时间未同步：准确的时间有助于 TLS、证书校验、日志排障，建议先在「网络与时间」菜单中校准" ;;
+        unknown)  log_warn "未能确认时间同步状态：建议在「网络与时间」菜单中查看与校准" ;;
+    esac
+}
+
+# -----------------------------------------------------------------------------
 # 更新
 # -----------------------------------------------------------------------------
 update_shadowsocks_rust() {
@@ -2071,109 +2449,232 @@ status_line() {
     systemctl is-active --quiet "${SS_SERVICE_NAME}"    && ss_active="${C_GREEN}运行中${C_RESET}"   || ss_active="${C_RED}未运行${C_RESET}"
     systemctl is-active --quiet "${STLS_SERVICE_NAME}"  && stls_active="${C_GREEN}运行中${C_RESET}" || stls_active="${C_RED}未运行${C_RESET}"
 
-    printf '版本: %s  监听模式: %s  IPv4: %s  IPv6: %s\n' \
-        "${SCRIPT_VERSION}" "${mode:-dual}" "${v4:-未检测}" "${v6:-未检测}"
-    printf 'SS2022: %s  端口: %s  服务: %s\n' \
+    printf '版本：%s   监听模式：%s\n' "${SCRIPT_VERSION}" "${mode:-dual}"
+    printf '公网 IPv4：%s   公网 IPv6：%s\n' "${v4:-未检测}" "${v6:-未检测}"
+    printf 'SS2022    ：%s   端口：%s   服务：%s\n' \
         "$([[ "${ss_inst}" == "true" ]] && echo 已安装 || echo 未安装)" \
         "${ss_port:-N/A}" "${ss_active}"
-    printf 'ShadowTLS: %s/%s  端口: %s  服务: %s\n' \
+    printf 'ShadowTLS ：%s / %s   端口：%s   服务：%s\n' \
         "$([[ "${stls_inst}" == "true" ]] && echo 已安装 || echo 未安装)" \
         "$([[ "${stls_en}" == "true" ]] && echo 已启用 || echo 未启用)" \
         "${stls_port:-N/A}" "${stls_active}"
+    printf '时间同步  ：%s\n' "$(time_status_label)"
 }
 
-print_menu() {
+print_main_menu() {
     clear 2>/dev/null || true
     cat <<EOF
-${C_BOLD}SS2022 + ShadowTLS 一键安装管理脚本 ${SCRIPT_VERSION}${C_RESET}
+${C_BOLD}SS2022 + ShadowTLS 管理脚本 ${SCRIPT_VERSION}${C_RESET}
 EOF
     status_line
     hr
     cat <<'EOF'
-[SS2022]
-  1) 安装 / 重装 SS2022          2) 卸载 SS2022
-  3) 启动 SS2022                 4) 停止 SS2022
-  5) 重启 SS2022                 6) 查看 SS2022 状态
-  7) 查看 SS2022 实时日志        8) 修改 SS2022 端口
-  9) 修改 SS2022 密码           10) 修改 SS2022 加密方式
- 11) 更新 shadowsocks-rust
-
-[ShadowTLS v3]
- 20) 启用 ShadowTLS v3          21) 停用 ShadowTLS
- 22) 卸载 ShadowTLS             23) 启动 ShadowTLS
- 24) 停止 ShadowTLS             25) 重启 ShadowTLS
- 26) 查看 ShadowTLS 状态        27) 查看 ShadowTLS 实时日志
- 28) 修改 ShadowTLS 端口        29) 修改 ShadowTLS 密码
- 30) 修改 ShadowTLS 伪装域名    31) 更新 shadow-tls
-
-[网络 / 节点信息]
- 40) 设置 IPv4/IPv6 监听模式    41) 设置服务器域名
- 42) 检测公网 IPv4/IPv6          43) 查看当前节点信息（遮蔽）
- 44) 显示完整节点信息            45) 生成 SS2022 普通链接
- 46) 生成 SS + ShadowTLS 合并链接
- 47) 生成 sing-box 配置          48) 生成 mihomo / Clash Meta 配置
-
-[二维码]
- 60) 生成 SS2022 二维码          61) 生成 SS + ShadowTLS 二维码
- 62) 生成全部二维码              63) 查看二维码保存路径
-
-[系统优化]
- 70) 设置 UDP 模式               71) 启用 BBR
- 72) 查看系统优化状态
-
+主菜单：
+  1) 一键安装 SS2022
+  2) 启用 / 配置 ShadowTLS v3
+  3) 查看节点信息
+  4) 生成二维码
+  5) 服务管理
+  6) 网络与时间
+  7) 高级设置
+  8) 一键完整卸载
   0) 退出
 EOF
     hr
 }
 
+# ----------- 子菜单 -----------
+
+submenu_shadowtls() {
+    while :; do
+        clear 2>/dev/null || true
+        cat <<'EOF'
+ShadowTLS v3：
+  1) 启用 ShadowTLS v3
+  2) 停用 ShadowTLS（保留二进制和配置）
+  3) 卸载 ShadowTLS（删除二进制和配置）
+  0) 返回主菜单
+EOF
+        read -r -p "请输入选项: " c
+        case "${c}" in
+            1) enable_shadowtls ;;
+            2) disable_shadowtls ;;
+            3) uninstall_shadowtls ;;
+            0) return ;;
+            *) log_error "无效选项：${c}" ;;
+        esac
+        press_any_key
+    done
+}
+
+submenu_node_info() {
+    while :; do
+        clear 2>/dev/null || true
+        cat <<'EOF'
+节点信息：
+  1) 查看节点信息（密码遮蔽）
+  2) 显示完整节点信息（含完整密码 / 链接 / 客户端配置）
+  3) 生成 SS2022 普通链接
+  4) 生成 SS + ShadowTLS 合并链接
+  5) 生成 sing-box 配置
+  6) 生成 mihomo / Clash Meta 配置
+  0) 返回主菜单
+EOF
+        read -r -p "请输入选项: " c
+        case "${c}" in
+            1) show_node_info ;;
+            2) show_full_node_info ;;
+            3) gen_ss_uri_only ;;
+            4) gen_ss_stls_uri_only ;;
+            5) gen_singbox_only ;;
+            6) gen_mihomo_only ;;
+            0) return ;;
+            *) log_error "无效选项：${c}" ;;
+        esac
+        press_any_key
+    done
+}
+
+submenu_qr() {
+    while :; do
+        clear 2>/dev/null || true
+        cat <<'EOF'
+生成二维码（默认仅在终端显示，不保存 PNG 文件）：
+  1) 显示 SS2022 二维码
+  2) 显示 SS + ShadowTLS 二维码
+  3) 显示全部二维码
+  0) 返回主菜单
+EOF
+        read -r -p "请输入选项: " c
+        case "${c}" in
+            1) qr_ss2022 ;;
+            2) qr_ss_stls ;;
+            3) qr_all ;;
+            0) return ;;
+            *) log_error "无效选项：${c}" ;;
+        esac
+        press_any_key
+    done
+}
+
+submenu_service() {
+    while :; do
+        clear 2>/dev/null || true
+        cat <<'EOF'
+服务管理：
+  1) 启动 SS2022          2) 停止 SS2022
+  3) 重启 SS2022          4) 查看 SS2022 状态
+  5) 查看 SS2022 日志
+  6) 启动 ShadowTLS       7) 停止 ShadowTLS
+  8) 重启 ShadowTLS       9) 查看 ShadowTLS 状态
+ 10) 查看 ShadowTLS 日志
+  0) 返回主菜单
+EOF
+        read -r -p "请输入选项: " c
+        case "${c}" in
+            1)  start_service   "${SS_SERVICE_NAME}" ;;
+            2)  stop_service    "${SS_SERVICE_NAME}" ;;
+            3)  restart_service "${SS_SERVICE_NAME}" ;;
+            4)  status_service  "${SS_SERVICE_NAME}" ;;
+            5)  journal_follow  "${SS_SERVICE_NAME}" ;;
+            6)  start_service   "${STLS_SERVICE_NAME}" ;;
+            7)  stop_service    "${STLS_SERVICE_NAME}" ;;
+            8)  restart_service "${STLS_SERVICE_NAME}" ;;
+            9)  status_service  "${STLS_SERVICE_NAME}" ;;
+            10) journal_follow  "${STLS_SERVICE_NAME}" ;;
+            0) return ;;
+            *) log_error "无效选项：${c}" ;;
+        esac
+        press_any_key
+    done
+}
+
+submenu_network_time() {
+    while :; do
+        clear 2>/dev/null || true
+        cat <<'EOF'
+网络与时间：
+  1) 检测公网 IPv4 / IPv6
+  2) 设置服务器域名
+  3) 设置 IPv4 / IPv6 监听模式
+  4) 查看系统时间与时区
+  5) 自动校准系统时间（NTP / chrony）
+  6) 手动设置时区
+  7) 手动设置系统时间
+  0) 返回主菜单
+EOF
+        read -r -p "请输入选项: " c
+        case "${c}" in
+            1) refresh_public_ips ;;
+            2) set_server_domain ;;
+            3) set_listen_mode_interactive
+               [[ "$(info_get '.ss2022.installed')" == "true" ]] && { write_ss2022_config; restart_service "${SS_SERVICE_NAME}"; }
+               [[ "$(info_get '.shadowtls.enabled')" == "true" ]] && { write_shadowtls_env; restart_service "${STLS_SERVICE_NAME}"; }
+               ;;
+            4) show_time_status ;;
+            5) sync_time_auto ;;
+            6) set_timezone_interactive ;;
+            7) set_time_manual ;;
+            0) return ;;
+            *) log_error "无效选项：${c}" ;;
+        esac
+        press_any_key
+    done
+}
+
+submenu_advanced() {
+    while :; do
+        clear 2>/dev/null || true
+        cat <<'EOF'
+高级设置：
+  1) 修改 SS2022 端口
+  2) 修改 SS2022 密码
+  3) 修改 SS2022 加密方式
+  4) 修改 ShadowTLS 端口
+  5) 修改 ShadowTLS 密码
+  6) 修改 ShadowTLS 伪装域名
+  7) 设置 UDP 模式
+  8) 启用 BBR / 查看系统优化状态
+  9) 更新 shadowsocks-rust
+ 10) 更新 shadow-tls
+ 11) 卸载 SS2022（不卸载 ShadowTLS / 不动其它）
+ 12) 安装 / 更新快捷命令 ss2022
+ 13) 删除快捷命令 ss2022
+  0) 返回主菜单
+EOF
+        read -r -p "请输入选项: " c
+        case "${c}" in
+            1)  modify_ss2022_port ;;
+            2)  modify_ss2022_password ;;
+            3)  modify_ss2022_method ;;
+            4)  modify_stls_port ;;
+            5)  modify_stls_password ;;
+            6)  modify_stls_domain ;;
+            7)  set_udp_mode ;;
+            8)  enable_bbr; echo; show_sys_opt ;;
+            9)  update_shadowsocks_rust ;;
+            10) update_shadowtls ;;
+            11) uninstall_ss2022 ;;
+            12) install_shortcut_command ;;
+            13) remove_shortcut_command ;;
+            0) return ;;
+            *) log_error "无效选项：${c}" ;;
+        esac
+        press_any_key
+    done
+}
+
 dispatch() {
     local c="$1"
     case "${c}" in
-        1)  install_ss2022 ;;
-        2)  uninstall_ss2022 ;;
-        3)  start_service   "${SS_SERVICE_NAME}" ;;
-        4)  stop_service    "${SS_SERVICE_NAME}" ;;
-        5)  restart_service "${SS_SERVICE_NAME}" ;;
-        6)  status_service  "${SS_SERVICE_NAME}" ;;
-        7)  journal_follow  "${SS_SERVICE_NAME}" ;;
-        8)  modify_ss2022_port ;;
-        9)  modify_ss2022_password ;;
-        10) modify_ss2022_method ;;
-        11) update_shadowsocks_rust ;;
-
-        20) enable_shadowtls ;;
-        21) disable_shadowtls ;;
-        22) uninstall_shadowtls ;;
-        23) start_service   "${STLS_SERVICE_NAME}" ;;
-        24) stop_service    "${STLS_SERVICE_NAME}" ;;
-        25) restart_service "${STLS_SERVICE_NAME}" ;;
-        26) status_service  "${STLS_SERVICE_NAME}" ;;
-        27) journal_follow  "${STLS_SERVICE_NAME}" ;;
-        28) modify_stls_port ;;
-        29) modify_stls_password ;;
-        30) modify_stls_domain ;;
-        31) update_shadowtls ;;
-
-        40) set_listen_mode_interactive; [[ "$(info_get '.ss2022.installed')" == "true" ]] && { write_ss2022_config; restart_service "${SS_SERVICE_NAME}"; }
-            [[ "$(info_get '.shadowtls.enabled')" == "true" ]] && { write_shadowtls_env; restart_service "${STLS_SERVICE_NAME}"; } ;;
-        41) set_server_domain ;;
-        42) refresh_public_ips ;;
-        43) show_node_info ;;
-        44) show_full_node_info ;;
-        45) gen_ss_uri_only ;;
-        46) gen_ss_stls_uri_only ;;
-        47) gen_singbox_only ;;
-        48) gen_mihomo_only ;;
-
-        60) qr_ss2022 ;;
-        61) qr_ss_stls ;;
-        62) qr_all ;;
-        63) show_qr_path ;;
-
-        70) set_udp_mode ;;
-        71) enable_bbr ;;
-        72) show_sys_opt ;;
-
+        1) install_ss2022 ;;
+        2) submenu_shadowtls ;;
+        3) submenu_node_info ;;
+        4) submenu_qr ;;
+        5) submenu_service ;;
+        6) submenu_network_time ;;
+        7) submenu_advanced ;;
+        8) uninstall_all ;;
         0) exit 0 ;;
         *) log_error "无效选项：${c}" ;;
     esac
@@ -2181,10 +2682,13 @@ dispatch() {
 
 main_loop() {
     while :; do
-        print_menu
+        print_main_menu
         read -r -p "请输入选项: " choice
         dispatch "${choice}"
-        press_any_key
+        # 子菜单内部自己处理 press_any_key；主菜单的一键操作再补一次
+        case "${choice}" in
+            1|8) press_any_key ;;
+        esac
     done
 }
 
