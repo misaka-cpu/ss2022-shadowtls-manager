@@ -17,7 +17,7 @@ umask 077
 # -----------------------------------------------------------------------------
 # 常量与路径定义（仅允许操作以下路径）
 # -----------------------------------------------------------------------------
-readonly SCRIPT_VERSION="v0.1.3-alpha"
+readonly SCRIPT_VERSION="v0.1.4-alpha"
 readonly SCRIPT_NAME="ss2022-shadowtls-manager"
 
 readonly PROJECT_ROOT="/root/ss2022-shadowtls-manager"
@@ -501,10 +501,34 @@ safe_remove_tmpfile() {
     fi
 }
 
+# 获取 GitHub repo 的最新 release tag。
+#   1) 优先 api.github.com (有 60 次/小时未授权限制)
+#   2) 失败回退到 https://github.com/<repo>/releases/latest 的 302 跳转，
+#      Location 头里包含 .../tag/<tag>
+# 两条都失败 → 返回空，调用方应给出"可能 GitHub API 限流或网络问题"的友好提示
 github_latest_tag() {
     local repo="$1"
-    curl -fsSL --max-time 15 "https://api.github.com/repos/${repo}/releases/latest" 2>/dev/null \
-        | jq -r '.tag_name // empty' 2>/dev/null
+    local tag=""
+    # ----- API 路径 -----
+    tag="$(curl -fsSL --max-time 15 \
+        "https://api.github.com/repos/${repo}/releases/latest" 2>/dev/null \
+        | jq -r '.tag_name // empty' 2>/dev/null)"
+    if [[ -n "${tag}" ]]; then
+        printf '%s' "${tag}"
+        return 0
+    fi
+    # ----- 302 redirect 路径 -----
+    # curl -sILo /dev/null 仅请求头；'%{url_effective}' 返回最终重定向 URL
+    local final
+    final="$(curl -sIL --max-time 15 -o /dev/null \
+        -w '%{url_effective}' \
+        "https://github.com/${repo}/releases/latest" 2>/dev/null)"
+    if [[ "${final}" =~ /releases/tag/([^/?#]+) ]]; then
+        printf '%s' "${BASH_REMATCH[1]}"
+        return 0
+    fi
+    # 两条都不行
+    return 1
 }
 
 # 下载 shadowsocks-rust 二进制
@@ -513,6 +537,7 @@ download_shadowsocks_rust() {
     [[ -z "${version}" ]] && version="$(github_latest_tag "${SS_RUST_REPO}")"
     if [[ -z "${version}" ]]; then
         log_error "无法获取 shadowsocks-rust 最新版本"
+        log_warn "无法检测最新版本，可能是 GitHub API 限流或网络问题。"
         return 1
     fi
     log_info "shadowsocks-rust 版本：${version}"
@@ -551,6 +576,7 @@ download_shadowtls() {
     [[ -z "${version}" ]] && version="$(github_latest_tag "${STLS_REPO}")"
     if [[ -z "${version}" ]]; then
         log_error "无法获取 shadow-tls 最新版本"
+        log_warn "无法检测最新版本，可能是 GitHub API 限流或网络问题。"
         return 1
     fi
     log_info "shadow-tls 版本：${version}"
@@ -1631,7 +1657,10 @@ modify_stls_port() {
     info_set ".shadowtls.port" "${new}"
     write_shadowtls_env
     open_firewall_port "${new}" tcp
-    [[ "${old}" != "${new}" ]] && suggest_close_port "${old}" tcp
+    # 仅当旧端口非空、非 0、与新端口不同时才建议清理（H2-G 守卫）
+    if [[ -n "${old}" && "${old}" != "0" && "${old}" != "${new}" ]]; then
+        suggest_close_port "${old}" tcp
+    fi
     restart_service "${STLS_SERVICE_NAME}"
     log_ok "ShadowTLS 端口已修改为 ${new}"
 }
@@ -1688,6 +1717,14 @@ set_listen_mode_interactive() {
         *) mode="dual" ;;
     esac
     info_set ".network.listen_mode" "\"${mode}\""
+    # IPv6 / dual 时若未检测到公网 IPv6，先给出非阻塞提示（H2-H）
+    if [[ "${mode}" == "ipv6" || "${mode}" == "dual" ]]; then
+        local cur_v6
+        cur_v6="$(info_get '.network.ipv6')"
+        if [[ -z "${cur_v6}" ]]; then
+            log_warn "当前未检测到公网 IPv6。IPv6 是否可用取决于 VPS、系统、防火墙和客户端网络。建议先使用「检测公网 IP」确认。"
+        fi
+    fi
     # 双栈情况下提示 bindv6only
     if [[ "${mode}" == "dual" ]]; then
         local v
@@ -1764,6 +1801,7 @@ generate_singbox_config() {
 # 注意：
 #   - SS + ShadowTLS 合并链接（ss://...?plugin=...）并非所有客户端都支持
 #   - 若客户端无法导入合并链接，请优先使用下方 sing-box 手动配置
+#   - 建议 sing-box >= 1.8（utls + shadowtls outbound 在新版本上更稳定）
 #   - sing-box 字段命名可能随版本变化，请以当前 sing-box 文档为准
 #   - JSON 本身不支持 # 注释，复制使用时请删除以 # 开头的所有注释行
 {
@@ -1830,14 +1868,15 @@ generate_mihomo_config() {
 # 注意：
 #   - SS + ShadowTLS 合并链接（ss://...?plugin=...）并非所有客户端都支持
 #   - 若客户端无法导入合并链接，请优先使用下方 mihomo / Clash Meta 手动配置
+#   - 建议使用较新 mihomo 内核（约 >= 1.18）；Clash Premium 不一定支持 ShadowTLS plugin
 #   - plugin / plugin-opts 字段命名可能随 mihomo / Clash Meta 版本变化，请以当前文档为准
-#   - server 加双引号以避免 IPv6 字面量在 YAML 中被误解析
+#   - server / cipher 加双引号以避免 IPv6 字面量与含 "-" 的字符串在 YAML 中被误解析
 proxies:
   - name: "${tag}"
     type: ss
     server: "${server}"
     port: ${port}
-    cipher: ${method}
+    cipher: "${method}"
     password: "${password}"
     plugin: shadow-tls
     client-fingerprint: chrome
@@ -1856,7 +1895,7 @@ proxies:
     type: ss
     server: "${server}"
     port: ${port}
-    cipher: ${method}
+    cipher: "${method}"
     password: "${password}"
 # ===== mihomo / Clash Meta 配置结束 =====
 EOF
@@ -1877,22 +1916,22 @@ mask_secret() {
 }
 
 print_endpoints_header() {
-    local v4 v6 domain stls_enabled
+    # H3-F：在函数开头一次性读取常用字段，复用 resolve_recommended_port 端口决策
+    local v4 v6 domain stls_enabled port type_label
     v4="$(info_get '.network.ipv4')"
     v6="$(info_get '.network.ipv6')"
     domain="$(info_get '.network.domain')"
     stls_enabled="$(info_get '.shadowtls.enabled')"
+    port="$(resolve_recommended_port)"
+    if [[ "${stls_enabled}" == "true" ]]; then
+        type_label="ShadowTLS v3"
+    else
+        type_label="SS2022 (公网直连)"
+    fi
     hr
     echo "服务器入口："
-    if [[ "${stls_enabled}" == "true" ]]; then
-        local port; port="$(info_get '.shadowtls.port')"
-        echo "  类型：ShadowTLS v3"
-        echo "  端口：${port}"
-    else
-        local port; port="$(info_get '.ss2022.public_port')"
-        echo "  类型：SS2022 (公网直连)"
-        echo "  端口：${port}"
-    fi
+    echo "  类型：${type_label}"
+    echo "  端口：${port}"
     [[ -n "${v4}" ]]     && echo "  IPv4 ：${v4}"
     [[ -n "${v6}" ]]     && echo "  IPv6 ：${v6}"
     [[ -n "${domain}" ]] && echo "  域名 ：${domain}"
@@ -1917,6 +1956,28 @@ collect_servers() {
     esac
     [[ -n "${domain}" ]] && out+="domain|${domain}|Domain"$'\n'
     printf '%s' "${out}"
+}
+
+# H3-E 公共 helper：
+#   - resolve_recommended_port: ShadowTLS 启用→ stls.port；否则→ ss2022.public_port
+#   - resolve_recommended_mode_label: "SS2022 + ShadowTLS" 或 "SS2022"
+#   - get_available_servers: collect_servers 的语义别名（便于阅读）
+resolve_recommended_port() {
+    if [[ "$(info_get '.shadowtls.enabled')" == "true" ]]; then
+        info_get '.shadowtls.port'
+    else
+        info_get '.ss2022.public_port'
+    fi
+}
+resolve_recommended_mode_label() {
+    if [[ "$(info_get '.shadowtls.enabled')" == "true" ]]; then
+        echo "SS2022 + ShadowTLS"
+    else
+        echo "SS2022"
+    fi
+}
+get_available_servers() {
+    collect_servers
 }
 
 # 显示节点信息（遮蔽）；可选 $1=full 显示完整
@@ -2009,13 +2070,16 @@ show_node_info_impl() {
   host / SNI：${stls_domain}
   ShadowTLS password：${stls_pw}
 
-=== Surge 手动配置（注意客户端版本是否支持 ShadowTLS） ===
+=== Surge 手动配置（实验性 / 需手动验证） ===
   Proxy = ss, <server>, ${stls_port}, encrypt-method=${method}, password=${password}, shadow-tls-password=${stls_pw}, shadow-tls-sni=${stls_domain}, shadow-tls-version=3
-  请以你当前 Surge 版本文档为准，字段命名可能不同
+  说明：
+    - Surge 是否支持 ShadowTLS 取决于当前版本，请以客户端实际配置项为准
+    - 不同 Surge iOS / Surge Mac 版本之间字段命名可能不同
+    - 上方为参考模板，可能需要根据 Surge 实际版本 UI 调整
 EOF
         fi
     else
-        echo "（仅展示遮蔽信息，选项 44 可显示完整节点信息 / 链接 / 配置）"
+        echo "（仅展示遮蔽信息，确认后将显示推荐链接 / 客户端配置 / 二维码）"
     fi
     hr
 }
@@ -2142,12 +2206,11 @@ show_recommended_uri_and_qrcode() {
         log_warn "SS2022 未安装"
         return
     fi
-    local stls_enabled
+    local stls_enabled port
     stls_enabled="$(info_get '.shadowtls.enabled')"
-    local port
+    port="$(resolve_recommended_port)"
+    echo
     if [[ "${stls_enabled}" == "true" ]]; then
-        port="$(info_get '.shadowtls.port')"
-        echo
         log_warn "ShadowTLS 已启用，公网连接请优先使用 SS + ShadowTLS 配置。"
         echo "=== 推荐：SS2022 + ShadowTLS 合并链接 ==="
         while IFS='|' read -r kind server label; do
@@ -2157,10 +2220,8 @@ show_recommended_uri_and_qrcode() {
             printf '\n--- %s (%s:%s) ---\n' "${label}" "${server}" "${port}"
             echo "${uri}"
             generate_terminal_qrcode "${uri}"
-        done < <(collect_servers)
+        done < <(get_available_servers)
     else
-        port="$(info_get '.ss2022.public_port')"
-        echo
         echo "=== 推荐：SS2022 ss:// 链接 ==="
         while IFS='|' read -r kind server label; do
             [[ -z "${kind}" ]] && continue
@@ -2169,7 +2230,7 @@ show_recommended_uri_and_qrcode() {
             printf '\n--- %s (%s:%s) ---\n' "${label}" "${server}" "${port}"
             echo "${uri}"
             generate_terminal_qrcode "${uri}"
-        done < <(collect_servers)
+        done < <(get_available_servers)
     fi
 }
 
@@ -2244,8 +2305,11 @@ enable_bbr() {
     qd="$(sysctl -n net.core.default_qdisc 2>/dev/null || echo unknown)"
     echo "当前 tcp_congestion_control: ${cc}"
     echo "当前 default_qdisc        : ${qd}"
+    if [[ -f "${SYSCTL_CONF}" ]]; then
+        echo "已存在 sysctl 配置文件：${SYSCTL_CONF}"
+    fi
     if [[ "${cc}" == "bbr" && "${qd}" == "fq" ]]; then
-        log_ok "BBR 已启用"
+        log_ok "BBR 已启用，无需重复设置。"
         return
     fi
     read -r -p "是否启用 BBR? [y/N]: " a
@@ -2256,18 +2320,37 @@ enable_bbr() {
 net.core.default_qdisc=fq
 net.ipv4.tcp_congestion_control=bbr
 EOF
+    log_info "已写入 sysctl 文件：${SYSCTL_CONF}（不会修改其它 sysctl 配置）"
     sysctl --system >/dev/null 2>&1 || true
     cc="$(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null || echo unknown)"
     qd="$(sysctl -n net.core.default_qdisc 2>/dev/null || echo unknown)"
     echo "现在 tcp_congestion_control: ${cc}"
     echo "现在 default_qdisc        : ${qd}"
+    if [[ "${cc}" == "bbr" && "${qd}" == "fq" ]]; then
+        log_ok "BBR 已启用（bbr + fq）"
+    else
+        log_warn "BBR 看起来未完全启用，可检查内核是否支持 bbr / sysctl --system 是否成功"
+    fi
 }
 
 show_sys_opt() {
-    echo "tcp_congestion_control: $(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null)"
-    echo "default_qdisc         : $(sysctl -n net.core.default_qdisc 2>/dev/null)"
+    local cc qd
+    cc="$(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null)"
+    qd="$(sysctl -n net.core.default_qdisc 2>/dev/null)"
+    echo "tcp_congestion_control: ${cc:-未知}"
+    echo "default_qdisc         : ${qd:-未知}"
+    if [[ "${cc}" == "bbr" && "${qd}" == "fq" ]]; then
+        echo "BBR 状态             : 已启用（bbr + fq）"
+    else
+        echo "BBR 状态             : 未启用"
+    fi
     echo "ipv6 bindv6only       : $(cat /proc/sys/net/ipv6/bindv6only 2>/dev/null)"
     echo "fs.file-max           : $(sysctl -n fs.file-max 2>/dev/null)"
+    if [[ -f "${SYSCTL_CONF}" ]]; then
+        echo "本项目 sysctl 文件    : ${SYSCTL_CONF}（已存在）"
+    else
+        echo "本项目 sysctl 文件    : ${SYSCTL_CONF}（不存在）"
+    fi
 }
 
 # -----------------------------------------------------------------------------
@@ -2426,22 +2509,26 @@ set_timezone_interactive() {
     local before_tz
     before_tz="$(_current_timezone)"
     echo "当前时区：${before_tz:-未知}"
-    echo "常用时区："
+    echo "设置时区："
     echo "  1) Asia/Shanghai"
     echo "  2) Asia/Hong_Kong"
     echo "  3) Asia/Taipei"
     echo "  4) Asia/Tokyo"
     echo "  5) UTC"
     echo "  6) 自定义输入"
-    read -r -p "选择 [1-6]: " ch
+    echo "  0) 返回"
+    read -r -p "选择 [0-6]: " ch
     local tz=""
     case "${ch}" in
+        0) return 0 ;;
         1) tz="Asia/Shanghai" ;;
         2) tz="Asia/Hong_Kong" ;;
         3) tz="Asia/Taipei" ;;
         4) tz="Asia/Tokyo" ;;
         5) tz="UTC" ;;
-        6) read -r -p "请输入时区（如 Europe/Berlin）: " tz ;;
+        6) read -r -p "请输入时区（如 Europe/Berlin，留空取消）: " tz
+           [[ -z "${tz}" ]] && { log_info "已取消"; return 0; }
+           ;;
         *) log_error "无效选择"; return 1 ;;
     esac
     [[ -z "${tz}" ]] && { log_error "时区为空"; return 1; }
@@ -2497,6 +2584,32 @@ hint_time_before_install() {
 # -----------------------------------------------------------------------------
 # 更新
 # -----------------------------------------------------------------------------
+# 通用：更新失败后从备份恢复二进制，并尝试恢复服务运行；若仍不可用则打印诊断
+_restore_binary_and_check() {
+    local backup="$1" target="$2" svc="$3"
+    if [[ -n "${backup}" && -f "${backup}" ]]; then
+        if cp -af -- "${backup}" "${target}" 2>/dev/null; then
+            log_info "已从备份恢复：${target}"
+        else
+            log_error "从备份恢复失败：${backup} -> ${target}"
+        fi
+    else
+        log_warn "未找到二进制备份，跳过恢复（可能为首次安装路径）"
+    fi
+    systemctl daemon-reload >/dev/null 2>&1 || true
+    if systemctl restart "${svc}" 2>/dev/null; then
+        sleep 1
+        if systemctl is-active --quiet "${svc}"; then
+            log_ok "${svc} 已使用旧版本恢复运行"
+            return 0
+        fi
+    fi
+    log_error "${svc} 恢复后仍未能启动，下面打印诊断："
+    systemctl status "${svc}"           --no-pager 2>&1 | sed -n '1,25p'
+    journalctl -u  "${svc}" -n 80       --no-pager 2>&1 | sed -n '1,100p'
+    return 1
+}
+
 update_shadowsocks_rust() {
     log_step "更新 shadowsocks-rust"
     local cur latest
@@ -2504,15 +2617,42 @@ update_shadowsocks_rust() {
     latest="$(github_latest_tag "${SS_RUST_REPO}")"
     echo "当前：${cur:-未知}"
     echo "最新：${latest:-未知}"
+    if [[ -z "${latest}" ]]; then
+        log_warn "无法检测最新版本，可能是 GitHub API 限流或网络问题。"
+        return 1
+    fi
     if [[ -n "${cur}" && "${cur}" == "${latest}" ]]; then
         log_ok "已是最新，无需更新"
         return
     fi
     read -r -p "是否更新? [Y/n]: " a
     [[ "${a}" =~ ^[Nn]$ ]] && { log_info "已取消"; return; }
+
+    # 备份旧二进制以便回滚（H2-J）
+    local ts backup_bin=""
+    if [[ -x "${SS_BINARY}" ]]; then
+        ts="$(date +%Y%m%d-%H%M%S)"
+        backup_bin="${PROJECT_BACKUP_DIR}/$(basename "${SS_BINARY}").${ts}.bak"
+        if cp -a -- "${SS_BINARY}" "${backup_bin}" 2>/dev/null; then
+            log_info "已备份旧二进制：${backup_bin}"
+        else
+            backup_bin=""
+            log_warn "备份旧二进制失败（继续，但回滚不可用）"
+        fi
+    fi
+
     systemctl stop "${SS_SERVICE_NAME}" >/dev/null 2>&1 || true
-    download_shadowsocks_rust "${latest}" || { log_error "更新失败，尝试启动旧版本"; systemctl start "${SS_SERVICE_NAME}" || true; return 1; }
+    if ! download_shadowsocks_rust "${latest}"; then
+        log_error "更新失败，将尝试从备份恢复旧版本"
+        _restore_binary_and_check "${backup_bin}" "${SS_BINARY}" "${SS_SERVICE_NAME}"
+        return 1
+    fi
     restart_service "${SS_SERVICE_NAME}"
+    if ! systemctl is-active --quiet "${SS_SERVICE_NAME}"; then
+        log_error "新版本服务未能启动，将尝试从备份恢复旧版本"
+        _restore_binary_and_check "${backup_bin}" "${SS_BINARY}" "${SS_SERVICE_NAME}"
+        return 1
+    fi
 }
 
 update_shadowtls() {
@@ -2522,15 +2662,41 @@ update_shadowtls() {
     latest="$(github_latest_tag "${STLS_REPO}")"
     echo "当前：${cur:-未知}"
     echo "最新：${latest:-未知}"
+    if [[ -z "${latest}" ]]; then
+        log_warn "无法检测最新版本，可能是 GitHub API 限流或网络问题。"
+        return 1
+    fi
     if [[ -n "${cur}" && "${cur}" == "${latest}" ]]; then
         log_ok "已是最新，无需更新"
         return
     fi
     read -r -p "是否更新? [Y/n]: " a
     [[ "${a}" =~ ^[Nn]$ ]] && { log_info "已取消"; return; }
+
+    local ts backup_bin=""
+    if [[ -x "${STLS_BINARY}" ]]; then
+        ts="$(date +%Y%m%d-%H%M%S)"
+        backup_bin="${PROJECT_BACKUP_DIR}/$(basename "${STLS_BINARY}").${ts}.bak"
+        if cp -a -- "${STLS_BINARY}" "${backup_bin}" 2>/dev/null; then
+            log_info "已备份旧二进制：${backup_bin}"
+        else
+            backup_bin=""
+            log_warn "备份旧二进制失败（继续，但回滚不可用）"
+        fi
+    fi
+
     systemctl stop "${STLS_SERVICE_NAME}" >/dev/null 2>&1 || true
-    download_shadowtls "${latest}" || { log_error "更新失败"; systemctl start "${STLS_SERVICE_NAME}" || true; return 1; }
+    if ! download_shadowtls "${latest}"; then
+        log_error "更新失败，将尝试从备份恢复旧版本"
+        _restore_binary_and_check "${backup_bin}" "${STLS_BINARY}" "${STLS_SERVICE_NAME}"
+        return 1
+    fi
     restart_service "${STLS_SERVICE_NAME}"
+    if ! systemctl is-active --quiet "${STLS_SERVICE_NAME}"; then
+        log_error "新版本服务未能启动，将尝试从备份恢复旧版本"
+        _restore_binary_and_check "${backup_bin}" "${STLS_BINARY}" "${STLS_SERVICE_NAME}"
+        return 1
+    fi
 }
 
 # -----------------------------------------------------------------------------
@@ -2725,7 +2891,8 @@ EOF
 # 主菜单
 # -----------------------------------------------------------------------------
 status_line() {
-    local ss_inst stls_en stls_inst v4 v6 ss_port stls_port mode
+    # H3-F：在函数开头一次性读取常用字段
+    local ss_inst stls_en stls_inst v4 v6 ss_port stls_port mode ss_mode stls_dom
     ss_inst="$(info_get '.ss2022.installed')"
     stls_en="$(info_get '.shadowtls.enabled')"
     stls_inst="$(info_get '.shadowtls.installed')"
@@ -2734,22 +2901,28 @@ status_line() {
     ss_port="$(info_get '.ss2022.public_port')"
     stls_port="$(info_get '.shadowtls.port')"
     mode="$(info_get '.network.listen_mode')"
+    ss_mode="$(info_get '.ss2022.mode')"
+    stls_dom="$(info_get '.shadowtls.tls_domain')"
 
     local ss_active stls_active
     systemctl is-active --quiet "${SS_SERVICE_NAME}"    && ss_active="${C_GREEN}运行中${C_RESET}"   || ss_active="${C_RED}未运行${C_RESET}"
     systemctl is-active --quiet "${STLS_SERVICE_NAME}"  && stls_active="${C_GREEN}运行中${C_RESET}" || stls_active="${C_RED}未运行${C_RESET}"
 
-    printf '版本：%s   监听模式：%s\n' "${SCRIPT_VERSION}" "${mode:-dual}"
-    printf '公网 IPv4：%s   公网 IPv6：%s\n' "${v4:-未检测}" "${v6:-未检测}"
-    printf 'SS2022    ：%s   端口：%s   服务：%s\n' \
+    # 5 行紧凑状态栏
+    printf '版本：%s   监听模式：%s   IPv4：%s   IPv6：%s\n' \
+        "${SCRIPT_VERSION}" "${mode:-dual}" "${v4:-未检测}" "${v6:-未检测}"
+    printf 'SS2022    ：%s / %s   端口：%s   模式：%s\n' \
         "$([[ "${ss_inst}" == "true" ]] && echo 已安装 || echo 未安装)" \
-        "${ss_port:-N/A}" "${ss_active}"
-    printf 'ShadowTLS ：%s / %s   端口：%s   服务：%s\n' \
-        "$([[ "${stls_inst}" == "true" ]] && echo 已安装 || echo 未安装)" \
-        "$([[ "${stls_en}" == "true" ]] && echo 已启用 || echo 未启用)" \
-        "${stls_port:-N/A}" "${stls_active}"
-    printf '时间同步  ：%s\n' "$(time_status_label)"
-    printf '快捷命令  ：%s\n' "$(shortcut_status_label)"
+        "${ss_active}" "${ss_port:-N/A}" "${ss_mode:-N/A}"
+    if [[ "${stls_en}" == "true" ]]; then
+        printf 'ShadowTLS ：%s / %s   端口：%s   伪装：%s\n' \
+            "已启用" "${stls_active}" "${stls_port:-N/A}" "${stls_dom:-N/A}"
+    else
+        printf 'ShadowTLS ：%s / %s   端口：%s\n' \
+            "$([[ "${stls_inst}" == "true" ]] && echo 已安装 || echo 未安装)" \
+            "${stls_active}" "${stls_port:-N/A}"
+    fi
+    printf '时间同步：%s   快捷命令：%s\n' "$(time_status_label)" "$(shortcut_status_label)"
 }
 
 # 快捷命令 3 态：
@@ -2833,7 +3006,7 @@ EOF
                echo
                [[ "$(info_get '.shadowtls.installed')" == "true" ]] && status_service "${STLS_SERVICE_NAME}"
                ;;
-            3) log_menu ;;
+            3) log_menu; continue ;;
             4) start_service "${SS_SERVICE_NAME}"
                [[ "$(info_get '.shadowtls.enabled')" == "true" ]] && start_service "${STLS_SERVICE_NAME}"
                ;;
