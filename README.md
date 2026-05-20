@@ -4,7 +4,7 @@ SS2022 + ShadowTLS v3 一键安装管理脚本，适用于 Debian / Ubuntu。
 
 ## 状态
 
-当前版本：**v0.1.2-alpha**
+当前版本：**v0.1.3-alpha**
 
 仍在测试阶段，请先在干净的 Debian/Ubuntu 上验证后再用于生产。
 

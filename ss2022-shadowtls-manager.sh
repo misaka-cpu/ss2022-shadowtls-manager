@@ -17,7 +17,7 @@ umask 077
 # -----------------------------------------------------------------------------
 # 常量与路径定义（仅允许操作以下路径）
 # -----------------------------------------------------------------------------
-readonly SCRIPT_VERSION="v0.1.2-alpha"
+readonly SCRIPT_VERSION="v0.1.3-alpha"
 readonly SCRIPT_NAME="ss2022-shadowtls-manager"
 
 readonly PROJECT_ROOT="/root/ss2022-shadowtls-manager"
@@ -807,6 +807,56 @@ journal_follow() {
     local name="$1"
     log_info "正在跟随 ${name} 日志，按 Ctrl+C 退出"
     journalctl -u "${name}" -f --no-pager
+}
+
+# 最近 100 行日志（一次性输出，立即返回菜单）
+journal_recent() {
+    local name="$1"
+    log_info "${name} 最近 100 行日志："
+    journalctl -u "${name}" -n 100 --no-pager 2>&1 | sed -n '1,200p'
+}
+
+# 实时跟随但 Ctrl+C 不杀掉脚本：父进程屏蔽 INT，子 shell 内恢复默认 INT 处理；
+# Ctrl+C 只杀 journalctl，回到调用菜单
+journal_follow_safe() {
+    local name="$1"
+    log_info "实时跟踪 ${name} 日志，按 Ctrl+C 返回菜单"
+    # 父进程暂时忽略 SIGINT
+    trap '' INT
+    (
+        # 子 shell 恢复默认 INT 处理；Ctrl+C 将杀掉 journalctl
+        trap - INT
+        journalctl -u "${name}" -f --no-pager
+    )
+    local rc=$?
+    trap - INT
+    echo
+    log_info "已退出实时跟踪（退出码 ${rc}），返回上一级菜单"
+}
+
+# 日志子菜单：最近 100 行 / 安全实时跟随；执行完返回菜单
+log_menu() {
+    while :; do
+        clear 2>/dev/null || true
+        cat <<'EOF'
+查看日志：
+  1) 查看 SS2022 最近 100 行日志
+  2) 查看 ShadowTLS 最近 100 行日志
+  3) 跟踪 SS2022 实时日志（Ctrl+C 返回）
+  4) 跟踪 ShadowTLS 实时日志（Ctrl+C 返回）
+  0) 返回
+EOF
+        read -r -p "请输入选项: " c
+        case "${c}" in
+            1) journal_recent      "${SS_SERVICE_NAME}" ;;
+            2) journal_recent      "${STLS_SERVICE_NAME}" ;;
+            3) journal_follow_safe "${SS_SERVICE_NAME}" ;;
+            4) journal_follow_safe "${STLS_SERVICE_NAME}" ;;
+            0) return ;;
+            *) log_error "无效选项：${c}" ;;
+        esac
+        press_any_key
+    done
 }
 
 # -----------------------------------------------------------------------------
@@ -1902,6 +1952,12 @@ show_node_info_impl() {
         else
             echo "ShadowTLS 密码 ：$(mask_secret "${stls_pw}")"
         fi
+        # 遮蔽版才提示 SS2022 本地后端（排障用途；不显示二维码、不作为公网节点）
+        if [[ "${full}" != "full" ]]; then
+            local _local_port
+            _local_port="$(info_get '.ss2022.local_port')"
+            echo "SS2022 本地后端：127.0.0.1:${_local_port}  (仅供排障，不作为公网节点导入)"
+        fi
     fi
     hr
 
@@ -1914,30 +1970,11 @@ show_node_info_impl() {
     fi
 
     if [[ "${full}" == "full" ]]; then
+        # 注意：推荐 URI + 二维码由 show_recommended_uri_and_qrcode 单独输出，
+        # 这里只保留客户端配置模板，避免重复打印同一条 URI。
         local row server label
         if [[ "${stls_enabled}" == "true" ]]; then
-            echo "=== SS2022 内部后端信息（仅本机调试 / 排障使用） ==="
-            log_warn "下方 ss:// 链接指向 127.0.0.1，不能作为公网节点导入；公网入口请使用 SS + ShadowTLS 合并链接"
-            local _local_port
-            _local_port="$(info_get '.ss2022.local_port')"
-            generate_ss_uri "127.0.0.1" "${_local_port}" "SS2022-INTERNAL-DEBUG"
-        else
-            echo "=== 普通 SS2022 ss:// 链接 ==="
-            while IFS='|' read -r kind server label; do
-                [[ -z "${kind}" ]] && continue
-                generate_ss_uri "${server}" "${conn_port}" "SS2022-${label}"
-            done < <(collect_servers)
-        fi
-
-        if [[ "${stls_enabled}" == "true" ]]; then
-            echo
-            echo "=== SS + ShadowTLS 合并链接（SIP002 plugin URI） ==="
-            echo "兼容性提示：部分客户端可直接导入；不支持时请使用下方 sing-box / mihomo 配置"
-            while IFS='|' read -r kind server label; do
-                [[ -z "${kind}" ]] && continue
-                generate_ss_shadowtls_uri "${server}" "${conn_port}" "SS-STLS-${label}"
-            done < <(collect_servers)
-
+            echo "兼容性提示：SS + ShadowTLS 合并链接非所有客户端都支持；导入失败时请使用下方 sing-box / mihomo 配置"
             echo
             echo "=== sing-box 配置示例 ==="
             local first=""
@@ -2112,7 +2149,7 @@ show_recommended_uri_and_qrcode() {
         port="$(info_get '.shadowtls.port')"
         echo
         log_warn "ShadowTLS 已启用，公网连接请优先使用 SS + ShadowTLS 配置。"
-        echo "=== 推荐：SS + ShadowTLS 合并链接（SIP002 plugin URI） ==="
+        echo "=== 推荐：SS2022 + ShadowTLS 合并链接 ==="
         while IFS='|' read -r kind server label; do
             [[ -z "${kind}" ]] && continue
             local uri
@@ -2140,8 +2177,9 @@ show_recommended_uri_and_qrcode() {
 show_node_info_with_qrcode() {
     show_node_info
     if confirm_show_secret; then
-        show_full_node_info
+        # 先显示推荐 URI + 终端二维码，再显示客户端配置模板，避免 URI 重复打印
         show_recommended_uri_and_qrcode
+        show_full_node_info
     else
         log_info "已取消显示完整链接和二维码"
     fi
@@ -2266,12 +2304,39 @@ time_status_label() {
     esac
 }
 
+# 读取当前时区；失败返回空
+_current_timezone() {
+    if command -v timedatectl >/dev/null 2>&1; then
+        timedatectl show -p Timezone --value 2>/dev/null
+    fi
+}
+
 show_time_status() {
     log_step "系统时间与时区"
-    echo "date:"
-    date
-    echo
+    echo "  本地时间：$(date '+%Y-%m-%d %H:%M:%S %Z')"
+    echo "  UTC 时间：$(date -u '+%Y-%m-%d %H:%M:%S UTC')"
     if command -v timedatectl >/dev/null 2>&1; then
+        local tz ntp synced rtc_local
+        tz="$(timedatectl show -p Timezone           --value 2>/dev/null)"
+        ntp="$(timedatectl show -p NTP               --value 2>/dev/null)"
+        synced="$(timedatectl show -p NTPSynchronized --value 2>/dev/null)"
+        rtc_local="$(timedatectl show -p LocalRTC    --value 2>/dev/null)"
+        echo "  当前时区：${tz:-未知}"
+        echo "  NTP 启用：${ntp:-未知}"
+        echo "  System clock synchronized：${synced:-未知}"
+        echo "  RTC in local TZ：${rtc_local:-未知}"
+        # systemd-timesyncd 服务状态（如可用）
+        if systemctl list-unit-files 2>/dev/null | grep -q '^systemd-timesyncd\.service'; then
+            local svc
+            svc="$(systemctl is-active systemd-timesyncd 2>/dev/null)"
+            echo "  systemd-timesyncd：${svc}"
+        elif command -v chronyc >/dev/null 2>&1; then
+            local cs
+            cs="$(systemctl is-active chrony 2>/dev/null || systemctl is-active chronyd 2>/dev/null)"
+            echo "  chrony：${cs:-未运行}"
+        fi
+        echo
+        echo "--- timedatectl status 输出 ---"
         timedatectl status 2>/dev/null || true
     else
         log_warn "timedatectl 不可用"
@@ -2285,42 +2350,68 @@ sync_time_auto() {
         suggest "可手动选择安装 chrony 进行时间同步"
         return 1
     fi
+    # 执行前快照
+    local before_state before_ntp before_synced
+    before_state="$(check_time_status)"
+    before_ntp="$(timedatectl show -p NTP             --value 2>/dev/null)"
+    before_synced="$(timedatectl show -p NTPSynchronized --value 2>/dev/null)"
+    echo "执行前：NTP=${before_ntp:-未知} / synchronized=${before_synced:-未知} / 本地时间=$(date '+%Y-%m-%d %H:%M:%S %Z')"
+
     # 优先 systemd-timesyncd
+    local tried_systemd=0
     if systemctl list-unit-files 2>/dev/null | grep -q '^systemd-timesyncd\.service'; then
+        tried_systemd=1
         log_info "尝试启用 NTP（systemd-timesyncd）..."
-        timedatectl set-ntp true 2>/dev/null || log_warn "set-ntp 失败"
-        systemctl restart systemd-timesyncd 2>/dev/null || log_warn "重启 systemd-timesyncd 失败"
+        timedatectl set-ntp true 2>/dev/null || log_warn "timedatectl set-ntp 失败"
+        if ! systemctl restart systemd-timesyncd 2>/dev/null; then
+            log_warn "重启 systemd-timesyncd 失败"
+        fi
         sleep 1
-        timedatectl status 2>/dev/null | grep -Ei 'NTP|System clock synchronized|Time zone' || true
-        case "$(check_time_status)" in
-            synced)
-                log_ok "时间已同步"
-                return 0
-                ;;
-            *)
-                log_warn "仍未同步，可尝试安装 chrony 作为后备"
-                ;;
-        esac
     else
-        log_info "未检测到 systemd-timesyncd"
+        log_info "未检测到 systemd-timesyncd 服务单元"
     fi
-    read -r -p "是否安装 chrony 进行时间同步? [y/N]: " a
-    [[ "${a}" =~ ^[Yy]$ ]] || { log_info "已取消"; return; }
-    if ! command -v apt-get >/dev/null 2>&1; then
-        log_error "未找到 apt-get，无法自动安装 chrony"
-        return 1
-    fi
-    DEBIAN_FRONTEND=noninteractive apt-get update -y >/dev/null 2>&1 || log_warn "apt-get update 失败"
-    if ! DEBIAN_FRONTEND=noninteractive apt-get install -y chrony >/dev/null 2>&1; then
-        log_error "chrony 安装失败"
-        return 1
-    fi
-    systemctl enable --now chrony >/dev/null 2>&1 || systemctl enable --now chronyd >/dev/null 2>&1 || true
-    sleep 1
-    if command -v chronyc >/dev/null 2>&1; then
-        chronyc tracking 2>/dev/null || true
-    fi
+
+    # 如未同步成功，可选 chrony 后备
     case "$(check_time_status)" in
+        synced) : ;;
+        *)
+            if (( tried_systemd )); then
+                log_warn "通过 systemd-timesyncd 后仍未确认同步"
+            fi
+            read -r -p "是否安装 chrony 作为时间同步后备? [y/N]: " a
+            if [[ "${a}" =~ ^[Yy]$ ]]; then
+                if ! command -v apt-get >/dev/null 2>&1; then
+                    log_error "未找到 apt-get，无法自动安装 chrony"
+                else
+                    DEBIAN_FRONTEND=noninteractive apt-get update -y >/dev/null 2>&1 || log_warn "apt-get update 失败"
+                    if DEBIAN_FRONTEND=noninteractive apt-get install -y chrony >/dev/null 2>&1; then
+                        systemctl enable --now chrony  >/dev/null 2>&1 \
+                          || systemctl enable --now chronyd >/dev/null 2>&1 \
+                          || true
+                        sleep 1
+                        command -v chronyc >/dev/null 2>&1 && chronyc tracking 2>/dev/null || true
+                    else
+                        log_error "chrony 安装失败"
+                    fi
+                fi
+            else
+                log_info "已跳过 chrony 安装"
+            fi
+            ;;
+    esac
+
+    # 执行后快照
+    local after_state after_ntp after_synced
+    after_state="$(check_time_status)"
+    after_ntp="$(timedatectl show -p NTP             --value 2>/dev/null)"
+    after_synced="$(timedatectl show -p NTPSynchronized --value 2>/dev/null)"
+    echo "执行后：NTP=${after_ntp:-未知} / synchronized=${after_synced:-未知} / 本地时间=$(date '+%Y-%m-%d %H:%M:%S %Z')"
+
+    if [[ "${before_state}" == "synced" && "${after_state}" == "synced" ]]; then
+        log_ok "系统时间本来已经同步，所以时间显示可能不会明显变化。"
+        return 0
+    fi
+    case "${after_state}" in
         synced)   log_ok "时间已同步" ;;
         *)        log_warn "时间仍未同步，请稍后再查看 timedatectl status" ;;
     esac
@@ -2332,6 +2423,9 @@ set_timezone_interactive() {
         log_error "timedatectl 不可用"
         return 1
     fi
+    local before_tz
+    before_tz="$(_current_timezone)"
+    echo "当前时区：${before_tz:-未知}"
     echo "常用时区："
     echo "  1) Asia/Shanghai"
     echo "  2) Asia/Hong_Kong"
@@ -2347,19 +2441,27 @@ set_timezone_interactive() {
         3) tz="Asia/Taipei" ;;
         4) tz="Asia/Tokyo" ;;
         5) tz="UTC" ;;
-        6)
-            read -r -p "请输入时区（如 Europe/Berlin）: " tz
-            ;;
+        6) read -r -p "请输入时区（如 Europe/Berlin）: " tz ;;
         *) log_error "无效选择"; return 1 ;;
     esac
     [[ -z "${tz}" ]] && { log_error "时区为空"; return 1; }
-    if ! timedatectl set-timezone "${tz}" 2>/dev/null; then
+
+    if [[ -n "${before_tz}" && "${before_tz}" == "${tz}" ]]; then
+        log_info "当前已经是该时区（${tz}），无需修改。"
+        return 0
+    fi
+
+    local err
+    if ! err="$(timedatectl set-timezone "${tz}" 2>&1)"; then
         log_error "设置时区失败：${tz}"
+        [[ -n "${err}" ]] && printf '  %s\n' "${err}"
         suggest "确认时区字符串是否合法（参考 timedatectl list-timezones）"
         return 1
     fi
-    log_ok "时区已设置为 ${tz}"
-    timedatectl status 2>/dev/null | grep -Ei 'Time zone' || true
+    local after_tz
+    after_tz="$(_current_timezone)"
+    log_ok "时区已修改：${before_tz:-未知} -> ${after_tz:-${tz}}"
+    echo "  本地时间：$(date '+%Y-%m-%d %H:%M:%S %Z')"
 }
 
 set_time_manual() {
@@ -2647,13 +2749,21 @@ status_line() {
         "$([[ "${stls_en}" == "true" ]] && echo 已启用 || echo 未启用)" \
         "${stls_port:-N/A}" "${stls_active}"
     printf '时间同步  ：%s\n' "$(time_status_label)"
-    local shortcut_label
+    printf '快捷命令  ：%s\n' "$(shortcut_status_label)"
+}
+
+# 快捷命令 3 态：
+#   - 本项目 wrapper（带标记） → 显示 "ss2022"（绿）
+#   - 路径不存在               → 显示 "未安装"（黄）
+#   - 路径存在但缺少标记       → 显示 "冲突"（红）
+shortcut_status_label() {
     if shortcut_installed; then
-        shortcut_label="${C_GREEN}已安装${C_RESET}"
+        printf '%sss2022%s' "${C_GREEN}" "${C_RESET}"
+    elif [[ -e "${SHORTCUT_PATH}" ]]; then
+        printf '%s冲突%s'   "${C_RED}"   "${C_RESET}"
     else
-        shortcut_label="${C_YELLOW}未安装${C_RESET}"
+        printf '%s未安装%s' "${C_YELLOW}" "${C_RESET}"
     fi
-    printf '快捷命令  ：%s\n' "${shortcut_label}"
 }
 
 print_main_menu() {
@@ -2709,7 +2819,7 @@ submenu_service() {
 服务管理：
   1) 重启全部服务（SS2022 + ShadowTLS）
   2) 查看服务状态
-  3) 查看实时日志
+  3) 查看日志（最近 100 行 / 实时跟踪，Ctrl+C 返回）
   4) 启动服务
   5) 停止服务
   0) 返回主菜单
@@ -2723,14 +2833,7 @@ EOF
                echo
                [[ "$(info_get '.shadowtls.installed')" == "true" ]] && status_service "${STLS_SERVICE_NAME}"
                ;;
-            3) echo "  1) SS2022 日志    2) ShadowTLS 日志"
-               read -r -p "选择 [1-2]: " sub
-               case "${sub}" in
-                   1) journal_follow "${SS_SERVICE_NAME}" ;;
-                   2) journal_follow "${STLS_SERVICE_NAME}" ;;
-                   *) log_error "无效选项" ;;
-               esac
-               ;;
+            3) log_menu ;;
             4) start_service "${SS_SERVICE_NAME}"
                [[ "$(info_get '.shadowtls.enabled')" == "true" ]] && start_service "${STLS_SERVICE_NAME}"
                ;;
@@ -2851,8 +2954,6 @@ submenu_advanced() {
   1) 修改 SS2022 设置
   2) 修改 ShadowTLS 设置
   3) UDP / BBR 设置
-  4) 修复快捷命令（重新安装 /usr/local/bin/ss2022）
-  5) 删除快捷命令
   0) 返回主菜单
 EOF
         read -r -p "请输入选项: " c
@@ -2860,8 +2961,6 @@ EOF
             1) submenu_modify_ss2022 ;;
             2) submenu_modify_shadowtls ;;
             3) submenu_udp_bbr ;;
-            4) install_shortcut_command; press_any_key ;;
-            5) remove_shortcut_command; press_any_key ;;
             0) return ;;
             *) log_error "无效选项：${c}" ;;
         esac
