@@ -6,25 +6,31 @@
 
 ## [Unreleased]
 
-### Added
-- `install.sh`：一行安装 bootstrap 脚本（root 检查 + curl/ca-cert 依赖 + 下载到 /tmp + `bash -n` 校验 + 备份旧版本 + `exec` 进入交互菜单）
-- `CHANGELOG.md`：本变更记录文件
-- `TESTING.md`：发布前的手工测试清单
-- `.github/workflows/syntax.yml`：CI 仅做 `bash -n` 语法检查，不触发任何系统级安装
-- 版本常量统一为 `MANAGER_VERSION`；同时保留 `SCRIPT_VERSION` **字面量** 别名（同值字符串），让仍在 v0.1.5 及更早版本的客户端通过 `grep SCRIPT_VERSION + sed` 时仍能提取到真实版本号（**不能写成 `"${MANAGER_VERSION}"`**，否则旧版客户端会提取到字面 `${MANAGER_VERSION}`）
-- `get_manager_script_path`：识别"真正的主脚本路径"，即使脚本通过 `/usr/local/bin/ss2022` wrapper 启动也能解析出 wrapper 内 `exec` 目标
-- `sync_wrapper_to_target`：覆盖管理脚本后自动校正快捷命令 wrapper 的 `exec` 指向；非本项目创建的同名 wrapper 不动
-- `_extract_manager_version_from_file` / `_extract_wrapper_target`：版本号与 wrapper 目标解析 helper
-- 一键检查更新现在打印调试信息：当前运行路径、快捷命令路径、快捷命令指向、版本对比结果
+（暂无）
+
+## [v0.2.0-beta] — 第一个公开 beta
 
 ### Fixed
-- **一键检查更新写入了 wrapper 而非真实主脚本**：旧版 `update_manager_script` 用 `readlink -f "$BASH_SOURCE[0]"`，在某些组合（多副本、不同启动路径、symlink chain）下会写错文件，结果版本号显示不变。新版改用 `get_manager_script_path` 解析真实路径，并在覆盖后立刻 `bash -n` + 提取 `MANAGER_VERSION` 与远程版本核对；不一致则自动回滚到备份，并打印路径诊断信息（目标脚本路径 / 快捷命令路径 / wrapper 前 5 行）
-- 远程版本探测改为优先 `MANAGER_VERSION`、回退 `SCRIPT_VERSION`，向后兼容老格式
+- **Shadowrocket / Surge 手动配置地址占位符**：新增 `resolve_preferred_server`（域名 → IPv4 → IPv6 → 空），输出时自动填入真实可用地址；未检测到任何可用地址时显示明确提示 "未检测，请先在「网络与时间 → 检测公网 IP」或「设置服务器域名」中配置"，不再输出 `<服务器 IP 或域名>` / `<server>` 占位符
+- **UDP 模式菜单缺少返回选项**：`set_udp_mode` 增加 `0) 返回`，使用 `MENU_RC_SKIP_PAUSE=10` 返回上一级；`submenu_udp_bbr` 案 1 加 `[[ $? -eq ... ]] && continue` 守卫，输入 0 时不再多按一次回车
+
+### Added
+- 普通 SS2022 模式（ShadowTLS 未启用）下也输出 Shadowrocket / Surge 手动配置模板，方便不使用 ShadowTLS 的用户
+- 已完成一行安装、快捷命令、统一更新、完整卸载、终端二维码、时间同步等核心场景的多轮实测
 
 ### Changed
-- README 重写为发布质量版本：突出 10 项卖点 + 安全边界 + 一行安装命令 + 常见问题表
-- 一键检查更新：管理脚本更新成功后**不再继续停留在旧进程里**。所有可用更新跑完后统一在 `check_and_update_all` 末尾询问 "是否立即重新启动新版管理菜单 [Y/n]"：Y → `exec "${target}"` 载入新版本菜单；N → `exit 0` 退出当前旧进程（旧文件已被新版本覆盖，继续运行会出现版本号不一致）
-- `update_manager_script` 不再就地 `exec` / `exit`，仅登记 `_MGR_UPDATE_TARGET` / `_MGR_UPDATE_VERSION`，让同一轮的 `ssserver` / `shadow-tls` / 快捷命令更新都能跑完后再统一重启
+- 版本常量升级到 `v0.2.0-beta`；README / CHANGELOG / 状态栏同步
+- 状态从 "alpha 内部测试 + 公开测试" 转为 "公开 beta"
+
+### 之前 alpha 阶段合入（v0.1.x-alpha 累计）
+本段汇总 v0.1.0 → v0.1.7-alpha 期间的关键变更：
+
+- `install.sh` 一行安装 bootstrap；`CHANGELOG.md` / `TESTING.md` / `.github/workflows/syntax.yml`
+- 版本常量统一为 `MANAGER_VERSION`，保留 `SCRIPT_VERSION` **字面量** 别名（旧客户端的 `grep + sed` 提取兼容性）
+- `get_manager_script_path` / `sync_wrapper_to_target` / `_extract_manager_version_from_file` / `_extract_wrapper_target`：精确解析真实主脚本路径和 wrapper 目标
+- 一键检查更新：管理脚本远程探测优先 `MANAGER_VERSION` 回退 `SCRIPT_VERSION`；覆盖后自动 `bash -n` + 版本核对；不一致自动回滚到备份并打印路径诊断
+- 更新成功后**不再继续停留在旧进程**：所有更新跑完统一在 `check_and_update_all` 末尾询问；Y → `exec target`，N → `exit 0`
+- 一键检查更新状态表新增调试字段：当前运行路径、快捷命令路径、快捷命令指向、状态
 
 ## [v0.1.7-alpha] — 实测 bug 修复
 

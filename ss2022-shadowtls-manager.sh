@@ -18,10 +18,10 @@ umask 077
 # 常量与路径定义（仅允许操作以下路径）
 # -----------------------------------------------------------------------------
 # 项目唯一版本常量；远程升级时从该常量提取版本号
-readonly MANAGER_VERSION="v0.1.7-alpha"
+readonly MANAGER_VERSION="v0.2.0-beta"
 # 别名：兼容仍在 v0.1.5 及更早版本的客户端进行远程版本探测（它们 grep SCRIPT_VERSION）
 # 必须使用字面量字符串而非 "${MANAGER_VERSION}"，否则旧版客户端 grep + sed 提取到的是字面 ${MANAGER_VERSION}
-readonly SCRIPT_VERSION="v0.1.7-alpha"
+readonly SCRIPT_VERSION="v0.2.0-beta"
 
 # 菜单返回码约定（v0.1.5）：
 #   - 普通返回（默认 0 / 非 10）：调用方按既有规则处理 press_any_key
@@ -2207,6 +2207,25 @@ get_available_servers() {
     collect_servers
 }
 
+# 推荐节点地址（用于 Shadowrocket / Surge 手动配置等单值场景）
+#   优先级：用户设置的域名 → 公网 IPv4 → 公网 IPv6 → 空
+#   返回原始字符串；IPv6 不带括号（手动配置字段通常不需要 [ ]）
+resolve_preferred_server() {
+    local d v4 v6
+    d="$(info_get '.network.domain')"
+    v4="$(info_get '.network.ipv4')"
+    v6="$(info_get '.network.ipv6')"
+    if [[ -n "${d}" ]]; then
+        printf '%s' "${d}"
+    elif [[ -n "${v4}" ]]; then
+        printf '%s' "${v4}"
+    elif [[ -n "${v6}" ]]; then
+        printf '%s' "${v6}"
+    else
+        printf ''
+    fi
+}
+
 # 显示节点信息（遮蔽）；可选 $1=full 显示完整
 show_node_info_impl() {
     local full="$1"
@@ -2260,7 +2279,14 @@ show_node_info_impl() {
     if [[ "${full}" == "full" ]]; then
         # 注意：推荐 URI + 二维码由 show_recommended_uri_and_qrcode 单独输出，
         # 这里只保留客户端配置模板，避免重复打印同一条 URI。
-        local row server label
+        local row server label preferred_server addr_field
+        preferred_server="$(resolve_preferred_server)"
+        if [[ -n "${preferred_server}" ]]; then
+            addr_field="${preferred_server}"
+        else
+            addr_field='未检测，请先在「网络与时间 → 检测公网 IP」或「设置服务器域名」中配置'
+        fi
+
         if [[ "${stls_enabled}" == "true" ]]; then
             echo "兼容性提示：SS + ShadowTLS 合并链接非所有客户端都支持；导入失败时请使用下方 sing-box / mihomo 配置"
             echo
@@ -2290,19 +2316,34 @@ show_node_info_impl() {
 === Shadowrocket 手动配置 ===
   类型：Shadowsocks
   加密：${method}
-  地址：<服务器 IP 或域名>
+  地址：${addr_field}
   端口：${stls_port}
+  密码：${password}
   插件：ShadowTLS（需客户端支持）
   ShadowTLS version：3
   host / SNI：${stls_domain}
   ShadowTLS password：${stls_pw}
 
 === Surge 手动配置（实验性 / 需手动验证） ===
-  Proxy = ss, <server>, ${stls_port}, encrypt-method=${method}, password=${password}, shadow-tls-password=${stls_pw}, shadow-tls-sni=${stls_domain}, shadow-tls-version=3
+  Proxy = ss, ${addr_field}, ${stls_port}, encrypt-method=${method}, password=${password}, shadow-tls-password=${stls_pw}, shadow-tls-sni=${stls_domain}, shadow-tls-version=3
   说明：
     - Surge 是否支持 ShadowTLS 取决于当前版本，请以客户端实际配置项为准
     - 不同 Surge iOS / Surge Mac 版本之间字段命名可能不同
     - 上方为参考模板，可能需要根据 Surge 实际版本 UI 调整
+EOF
+        else
+            # 非 ShadowTLS：普通 SS2022 的 Shadowrocket / Surge 配置
+            cat <<EOF
+
+=== Shadowrocket 手动配置（普通 SS2022） ===
+  类型：Shadowsocks
+  加密：${method}
+  地址：${addr_field}
+  端口：${port}
+  密码：${password}
+
+=== Surge 手动配置（普通 SS2022） ===
+  Proxy = ss, ${addr_field}, ${port}, encrypt-method=${method}, password=${password}
 EOF
         fi
     else
@@ -2529,10 +2570,12 @@ set_udp_mode() {
     stls_enabled="$(info_get '.shadowtls.enabled')"
     echo "UDP 模式："
     echo "  1) 禁用 UDP（推荐启用 ShadowTLS 时）"
-    echo "  2) UDP 直连：SS2022 单独保留 UDP 公网端口（与 ShadowTLS 共存）"
+    echo "  2) 仅 UDP 直连：SS2022 单独保留 UDP 公网端口（与 ShadowTLS 共存）"
     echo "  3) tcp_and_udp：SS2022 同端口承担 TCP+UDP（仅在未启用 ShadowTLS 时合理）"
-    read -r -p "选择 [1-3]: " m
+    echo "  0) 返回"
+    read -r -p "选择 [0-3]: " m
     case "${m}" in
+        0) return ${MENU_RC_SKIP_PAUSE} ;;
         1)
             info_set ".ss2022.mode" "\"tcp_only\""
             log_ok "已设置为 tcp_only"
@@ -2559,7 +2602,7 @@ set_udp_mode() {
                 open_firewall_port "${p}" udp
             fi
             ;;
-        *) log_error "无效"; return 1 ;;
+        *) log_error "无效选择"; return 1 ;;
     esac
     write_ss2022_config
     restart_service "${SS_SERVICE_NAME}"
@@ -3615,7 +3658,10 @@ UDP / BBR 设置：
 EOF
         read -r -p "请输入选项: " c
         case "${c}" in
-            1) set_udp_mode ;;
+            1) set_udp_mode
+               # 用户在 UDP 模式菜单按 0 → MENU_RC_SKIP_PAUSE，跳过 press_any_key
+               [[ $? -eq ${MENU_RC_SKIP_PAUSE} ]] && continue
+               ;;
             2) enable_bbr ;;
             3) show_sys_opt ;;
             0) return ;;
