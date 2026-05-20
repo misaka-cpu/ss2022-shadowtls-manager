@@ -1,0 +1,8 @@
+.claude/
+*.log
+*.tmp
+.env
+config.env
+info.json
+qrcode/
+backup/
