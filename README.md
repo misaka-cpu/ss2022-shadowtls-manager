@@ -4,7 +4,7 @@ SS2022 + ShadowTLS v3 一体化管理脚本，适用于 Debian / Ubuntu / CentOS
 
 ## 当前状态
 
-- 当前版本：**v1.0.2**
+- 当前版本：**v1.0.3**
 - 状态：**稳定版**
 - 已在 Debian / Ubuntu / CentOS 9 上经过实测；仍建议先在干净 Debian / Ubuntu / CentOS 测试后再用于长期环境
 
@@ -13,7 +13,7 @@ SS2022 + ShadowTLS v3 一体化管理脚本，适用于 Debian / Ubuntu / CentOS
 1. **一键安装 / 管理 Shadowsocks 2022**：基于 `shadowsocks-rust`，systemd 托管
 2. **可选启用 ShadowTLS v3**：基于 `ihciah/shadow-tls`，TCP 流伪装为 TLS 1.3 握手
 3. **自动创建 `ss2022` 快捷命令**：安装成功后自动写入 `/usr/local/bin/ss2022`，并通过项目标记保护，绝不覆盖他人同名文件
-4. **安装/启用完成直接显示完整链接 + 终端二维码**：默认只在终端显示，**不保存 PNG 文件**，无需再去其它菜单
+4. **安装/启用完成直接显示完整文字链接**：只在终端输出推荐 ss:// / SS+ShadowTLS 合并链接，无需再去其它菜单，亦不渲染图像、不保存任何文件
 5. **支持 IPv4 / IPv6 / 双栈**：URI 自动加 `[ ]`、`[::]:port` 监听拼接精确
 6. **支持 sing-box / mihomo / Clash Meta / Shadowrocket / Surge 客户端配置输出**
 7. **支持时间同步检查和校准**：`systemd-timesyncd` 优先；缺失 NTP 服务时提示手动安装命令，chrony 默认不自动安装（避免被慢速软件源阻塞）
@@ -84,8 +84,8 @@ ss2022
 ## 主菜单
 
 ```
-SS2022 + ShadowTLS 管理脚本 v1.0.2
-版本：v1.0.2   监听模式：dual   IPv4：x.x.x.x   IPv6：xxxx::xxxx
+SS2022 + ShadowTLS 管理脚本 v1.0.3
+版本：v1.0.3   监听模式：dual   IPv4：x.x.x.x   IPv6：xxxx::xxxx
 SS2022    ：已安装 / 运行中   端口：18388   模式：tcp_only
 ShadowTLS ：已启用 / 运行中   端口：8443    伪装：www.bing.com
 时间同步：已同步   快捷命令：ss2022
@@ -125,7 +125,7 @@ ShadowTLS ：已启用 / 运行中   端口：8443    伪装：www.bing.com
 **不会做**：
 - 不动 nftables 规则与 `/etc/nftables.conf`
 - 不动 `nftables-nat-rust-enhanced` 项目
-- 不卸载 apt 包（curl / jq / qrencode / chrony / wget 全部保留）
+- 不卸载 apt 包（curl / jq / chrony / wget 全部保留）
 - 不删 ufw / firewalld 端口规则（提示用户自行检查）
 - 不删 `${SYSCTL_CONF}`（BBR 配置）—— 提示用户自行清理
 - 不删任何非本项目创建的文件
@@ -141,7 +141,7 @@ ShadowTLS ：已启用 / 运行中   端口：8443    伪装：www.bing.com
 | 覆盖 `/usr/local/sbin/` 下非本项目文件 | **禁止** |
 | 宽泛 `rm -rf` | **禁止**；所有 `rm` 走路径白名单 / 标记校验 / 项目常量比对 |
 
-防火墙检测：识别到 `nftables` 时仅打印建议命令，由用户自行决定是否执行；`ufw` / `firewalld` 才会自动放行 SS2022 / ShadowTLS 端口（仍可拒绝自动清理旧规则）。
+防火墙检测：识别到 `nftables` 时仅打印参考命令，绝不修改规则。`ufw` / `firewalld` 也**不会自动放行**——v1.0.3 起 `open_firewall_port` 会先输出手动命令并询问 `[y/N]` 默认 No；只有在用户明确输入 `y` 时才执行对应 `ufw allow` / `firewall-cmd --add-port`。安装流程默认零防火墙改动。
 
 ## 常见问题
 
@@ -152,7 +152,6 @@ ShadowTLS ：已启用 / 运行中   端口：8443    伪装：www.bing.com
 | `ssserver` 启动失败 | `journalctl -u ss2022 -n 80 --no-pager`；多为端口占用或 PSK 长度与方法不匹配 |
 | `shadow-tls` 启动失败 | 检查 `/etc/shadowtls/config.env` 中 `SERVER_ADDR` 是否指向 SS2022 本机端口；`shadow-tls --help` 验证二进制 |
 | IPv6 不通 | 确认 VPS 是否分配 IPv6；`cat /proc/sys/net/ipv6/bindv6only`；客户端网络是否双栈 |
-| 二维码扫码失败 | 链接 > 300 字符时部分客户端无法扫；改用 sing-box / mihomo 手动配置 |
 | 合并链接导入失败 | 主菜单「查看节点信息」中确认后查看 sing-box / mihomo 配置模板 |
 | 时间同步异常 | 「网络与时间 → 自动校准时间」；systemd-timesyncd 不可用时可改用 chrony |
 | GitHub API 限流导致无法检测最新版本 | 一键检查更新会自动回退到 `releases/latest` 302 跳转抓 tag；都失败时友好提示，旧版本不受影响 |
@@ -162,8 +161,9 @@ ShadowTLS ：已启用 / 运行中   端口：8443    伪装：www.bing.com
 - **v0.1.x-alpha**：内部测试 + 公开测试
 - **v0.2.x-beta**：第一个 beta release，配套 `install.sh` 一行安装
 - **v1.0.0**：稳定版，已在 Debian / Ubuntu / CentOS 9 上实测；一行安装自动建快捷命令、依赖安装多发行版超时、时间显示明确解释 UTC 偏移、一键完整卸载默认不备份、BBR 状态友好化
-- **v1.0.1**：修复依赖安装在网络源慢时长时间卡住的体验问题——必需依赖批量安装并收紧超时（索引 60s / 安装 120s）、qrencode / chrony 改为可选不再默认阻塞、超时/失败给出软件源诊断与手动命令
-- **v1.0.2**（当前）：修复 v1.0.1 残留逻辑漏洞——必需依赖安装失败 / 超时后脚本必定停止并返回菜单（绝不再输出"依赖检查完成"）、错误提示与软件源诊断改为短行分块、缺失命令以 `jq / xz/xzcat / dig/nslookup / ip / ss` 等用户可读形式列出
+- **v1.0.1**：修复依赖安装在网络源慢时长时间卡住的体验问题——必需依赖批量安装并收紧超时（索引 60s / 安装 120s）、`qrencode` / `chrony` 改为可选不再默认阻塞、超时/失败给出软件源诊断与手动命令
+- **v1.0.2**：修复 v1.0.1 残留逻辑漏洞——必需依赖安装失败 / 超时后脚本必定停止并返回菜单（绝不再输出"依赖检查完成"）、错误提示与软件源诊断改为短行分块、缺失命令以 `jq / xz/xzcat / dig/nslookup / ip / ss` 等用户可读形式列出；时间同步路径不再自动安装 chrony
+- **v1.0.3**（当前）：彻底移除终端二维码渲染功能与对 `qrencode` 的依赖；安装 / 启用完成与「查看节点信息」均只输出完整文字链接 + 客户端配置模板。安装流程进一步轻量化：防火墙改为打印手动命令 + `[y/N]` 默认 No；BBR / 客户端模板大段输出 / 一键检查更新 / chrony 等可选功能全部不在安装路径中触发，仅在对应高级菜单按需调用
 - **v1.0.x**：仅修复缺陷，不引入 breaking change
 
 ## 贡献 / 反馈

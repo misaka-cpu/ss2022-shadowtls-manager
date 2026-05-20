@@ -18,10 +18,10 @@ umask 077
 # 常量与路径定义（仅允许操作以下路径）
 # -----------------------------------------------------------------------------
 # 项目唯一版本常量；远程升级时从该常量提取版本号
-readonly MANAGER_VERSION="v1.0.2"
+readonly MANAGER_VERSION="v1.0.3"
 # 别名：兼容仍在 v0.1.5 及更早版本的客户端进行远程版本探测（它们 grep SCRIPT_VERSION）
 # 必须使用字面量字符串而非 "${MANAGER_VERSION}"，否则旧版客户端 grep + sed 提取到的是字面 ${MANAGER_VERSION}
-readonly SCRIPT_VERSION="v1.0.2"
+readonly SCRIPT_VERSION="v1.0.3"
 
 # 菜单返回码约定（v0.1.5）：
 #   - 普通返回（默认 0 / 非 10）：调用方按既有规则处理 press_any_key
@@ -36,7 +36,6 @@ readonly PROJECT_ROOT="/root/ss2022-shadowtls-manager"
 readonly PROJECT_ETC="/etc/ss2022-shadowtls-manager"
 readonly PROJECT_INFO="${PROJECT_ETC}/info.json"
 readonly PROJECT_BACKUP_DIR="${PROJECT_ETC}/backup"
-readonly PROJECT_QRCODE_DIR="${PROJECT_ETC}/qrcode"
 
 readonly SS_DIR="/etc/shadowsocks-rust"
 readonly SS_CONFIG="${SS_DIR}/config.json"
@@ -195,7 +194,7 @@ detect_arch() {
 # 依赖安装：支持 apt-get（Debian/Ubuntu）、dnf / yum（RHEL 系）
 #   - 自动检测包管理器
 #   - 必需依赖一次性批量安装：索引更新 60s 超时，安装 120s 超时
-#   - qrencode / chrony 为可选依赖，本脚本主流程与时间同步均不会自动安装
+#   - 本脚本不再依赖 qrencode；chrony 仅时间同步备选，主流程不自动安装
 #   - 索引更新失败不致命，会继续尝试用已有索引安装
 #   - 包名按发行版差异自动映射：xz-utils↔xz、dnsutils↔bind-utils、iproute2↔iproute
 # -----------------------------------------------------------------------------
@@ -303,12 +302,12 @@ install_dependencies() {
         log_warn "    apt-get install -y ca-certificates curl jq xz-utils iproute2 dnsutils"
         log_warn "  CentOS/RHEL:"
         log_warn "    dnf install -y ca-certificates curl jq xz iproute bind-utils"
-        log_warn "qrencode / chrony 为可选依赖，缺失不阻塞主流程；如需可手动安装。"
+        log_warn "chrony 仅在「网络与时间 → 自动校准时间」中按需手动安装，本脚本不会自动安装。"
         return 1
     fi
     log_info "包管理器：${_PKG_MGR}（OS 家族：${OS_FAMILY}）"
     log_info "必需依赖：curl jq xz ip ss dig"
-    log_info "可选依赖：qrencode（二维码显示）、chrony（时间同步备选）"
+    log_info "可选依赖：chrony（仅时间同步备选，主流程不安装）"
 
     # 先尝试索引更新（失败仅警告，继续）
     pkg_update_index_once
@@ -371,15 +370,6 @@ install_dependencies() {
         log_ok "批量安装必需依赖完成"
     fi
 
-    # 仅在必需依赖齐全后才提示 qrencode 可选状态，避免与失败错误混淆
-    if ! _have_cmd qrencode; then
-        log_info "未检测到 qrencode（可选）。"
-        log_info "缺失仅影响终端二维码显示，不影响 SS2022 安装。"
-        log_info "如需，可稍后手动安装："
-        log_info "  Debian/Ubuntu: apt-get install -y qrencode"
-        log_info "  CentOS/RHEL  : dnf install -y qrencode"
-    fi
-
     log_ok "依赖检查完成（必需依赖全部就绪）"
     return 0
 }
@@ -388,9 +378,9 @@ install_dependencies() {
 # 项目目录与状态文件
 # -----------------------------------------------------------------------------
 ensure_project_dirs() {
-    mkdir -p "${PROJECT_ROOT}" "${PROJECT_ETC}" "${PROJECT_BACKUP_DIR}" "${PROJECT_QRCODE_DIR}"
+    mkdir -p "${PROJECT_ROOT}" "${PROJECT_ETC}" "${PROJECT_BACKUP_DIR}"
     mkdir -p "${SS_DIR}" "${STLS_DIR}"
-    chmod 700 "${PROJECT_ETC}" "${PROJECT_BACKUP_DIR}" "${PROJECT_QRCODE_DIR}" "${SS_DIR}" "${STLS_DIR}" 2>/dev/null || true
+    chmod 700 "${PROJECT_ETC}" "${PROJECT_BACKUP_DIR}" "${SS_DIR}" "${STLS_DIR}" 2>/dev/null || true
     if [[ ! -f "${PROJECT_INFO}" ]]; then
         cat > "${PROJECT_INFO}" <<EOF
 {
@@ -1198,21 +1188,40 @@ detect_firewall() {
 
 open_firewall_port() {
     local port="$1" proto="${2:-tcp}"
-    local fw
+    local fw ans
     fw="$(detect_firewall)"
     case "${fw}" in
         ufw)
-            log_info "ufw：放行 ${port}/${proto}"
-            ufw allow "${port}/${proto}" >/dev/null 2>&1 || log_warn "ufw 放行失败"
+            log_info "检测到 ufw。本脚本默认不会自动修改防火墙规则。"
+            log_info "如需放行，请手动执行："
+            log_info "    ufw allow ${port}/${proto}"
+            read -r -p "是否现在由本脚本执行该命令? [y/N]: " ans
+            if [[ "${ans}" =~ ^[Yy]$ ]]; then
+                ufw allow "${port}/${proto}" >/dev/null 2>&1 \
+                    && log_ok "ufw：已放行 ${port}/${proto}" \
+                    || log_warn "ufw 放行失败"
+            else
+                log_info "已跳过 ufw 自动放行；端口 ${port}/${proto} 请按上方命令手动放行"
+            fi
             ;;
         firewalld)
-            log_info "firewalld：放行 ${port}/${proto}"
-            firewall-cmd --permanent --add-port="${port}/${proto}" >/dev/null 2>&1 || log_warn "firewalld 放行失败"
-            firewall-cmd --reload >/dev/null 2>&1 || true
+            log_info "检测到 firewalld。本脚本默认不会自动修改防火墙规则。"
+            log_info "如需放行，请手动执行："
+            log_info "    firewall-cmd --permanent --add-port=${port}/${proto}"
+            log_info "    firewall-cmd --reload"
+            read -r -p "是否现在由本脚本执行上述两条命令? [y/N]: " ans
+            if [[ "${ans}" =~ ^[Yy]$ ]]; then
+                firewall-cmd --permanent --add-port="${port}/${proto}" >/dev/null 2>&1 \
+                    && log_ok "firewalld：已放行 ${port}/${proto}" \
+                    || log_warn "firewalld 放行失败"
+                firewall-cmd --reload >/dev/null 2>&1 || true
+            else
+                log_info "已跳过 firewalld 自动放行；端口 ${port}/${proto} 请按上方命令手动放行"
+            fi
             ;;
         nftables|nftables-present)
-            log_warn "检测到 nftables（可能由 nftables-nat-rust-enhanced 管理），出于安全本脚本不会自动修改 nftables 规则"
-            log_warn "请自行确认放行端口 ${port}/${proto}（IPv4 与 IPv6 均需考虑），示例命令仅作参考："
+            log_warn "检测到 nftables（可能由 nftables-nat-rust-enhanced 管理），本脚本不会自动修改 nftables 规则"
+            log_warn "如需放行端口 ${port}/${proto}（IPv4 与 IPv6 均需考虑），示例命令仅作参考："
             printf '   nft add rule inet filter input %s dport %s accept\n' "${proto}" "${port}"
             ;;
         none)
@@ -1388,7 +1397,7 @@ install_ss2022() {
         fi
     fi
 
-    # v0.1.6：用户主动安装动作后直接展示完整结果（链接 + 二维码）
+    # 用户主动安装动作后直接展示完整结果（仅文字链接）
     show_install_result_full
 }
 
@@ -1595,7 +1604,7 @@ EOF
     restart_service "${SS_SERVICE_NAME}"
     restart_service "${STLS_SERVICE_NAME}"
     log_ok "ShadowTLS v3 已启用"
-    # v0.1.6：启用成功后直接展示完整推荐链接 + 二维码
+    # 启用成功后直接展示完整推荐链接（仅文字链接）
     show_shadowtls_enable_result_full
 }
 
@@ -1730,7 +1739,7 @@ uninstall_all() {
   - ${STLS_ENV}
   - ${SS_SERVICE}
   - ${STLS_SERVICE}
-  - ${PROJECT_ETC}/        （含 info.json / qrcode / backup）
+  - ${PROJECT_ETC}/        （含 info.json / backup）
   - ${SS_DIR}/             （仅当为空时删除目录本身）
   - ${STLS_DIR}/           （仅当为空时删除目录本身）
   - ${SHORTCUT_PATH}        （仅当包含标记 "${SHORTCUT_MARKER}" 时；否则跳过）
@@ -1740,7 +1749,7 @@ uninstall_all() {
   - nftables-nat-rust-enhanced 项目
   - /usr/local/sbin/ 下非本项目文件
   - 其它代理程序
-  - 已安装的 apt / dnf / yum 包（curl / jq / qrencode / chrony / wget 等）
+  - 已安装的 apt / dnf / yum 包（curl / jq / chrony / wget 等）
   - 防火墙的 ufw / firewalld 端口规则（请按需自行清理）
 
 ${C_YELLOW}一键完整卸载将直接删除本项目配置和服务文件，不再备份。请确认你已经保存好节点信息。${C_RESET}
@@ -1815,7 +1824,7 @@ EOF
         shortcut_state="不存在"
     fi
 
-    # 4) PROJECT_ETC：项目自有目录，整目录删除（路径前缀严格校验，含 info.json / qrcode / backup）
+    # 4) PROJECT_ETC：项目自有目录，整目录删除（路径前缀严格校验，含 info.json / backup）
     local etc_state
     if [[ -d "${PROJECT_ETC}" && "${PROJECT_ETC}" == "/etc/ss2022-shadowtls-manager" ]]; then
         if rm -rf -- "${PROJECT_ETC}" 2>/dev/null; then
@@ -2406,7 +2415,7 @@ show_node_info_impl() {
         else
             echo "ShadowTLS 密码 ：$(mask_secret "${stls_pw}")"
         fi
-        # 遮蔽版才提示 SS2022 本地后端（排障用途；不显示二维码、不作为公网节点）
+        # 遮蔽版才提示 SS2022 本地后端（排障用途；不作为公网节点）
         if [[ "${full}" != "full" ]]; then
             local _local_port
             _local_port="$(info_get '.ss2022.local_port')"
@@ -2424,7 +2433,7 @@ show_node_info_impl() {
     fi
 
     if [[ "${full}" == "full" ]]; then
-        # 注意：推荐 URI + 二维码由 show_recommended_uri_and_qrcode 单独输出，
+        # 注意：推荐 URI 由 show_recommended_uri 单独输出，
         # 这里只保留客户端配置模板，避免重复打印同一条 URI。
         local row server label preferred_server addr_field
         preferred_server="$(resolve_preferred_server)"
@@ -2494,7 +2503,7 @@ EOF
 EOF
         fi
     else
-        echo "（仅展示遮蔽信息，确认后将显示推荐链接 / 客户端配置 / 二维码）"
+        echo "（仅展示遮蔽信息，确认后将显示推荐完整链接 / 客户端配置）"
     fi
     hr
 }
@@ -2573,47 +2582,18 @@ gen_mihomo_only() {
 }
 
 # -----------------------------------------------------------------------------
-# 二维码生成（仅终端显示，不写 PNG）
+# 节点链接输出（仅文字链接，不输出任何图形 / 图片格式）
 # -----------------------------------------------------------------------------
-# generate_terminal_qrcode <content>
-#   - qrencode 缺失时只提示并输出文字链接，绝不自动 apt/dnf 安装（避免主流程被阻塞 180s）
-#   - 不接收文件路径；不保存任何文件
-generate_terminal_qrcode() {
-    local content="$1"
-    if ! command -v qrencode >/dev/null 2>&1; then
-        log_warn "未检测到 qrencode，无法显示终端二维码。"
-        log_info "当前先显示完整文字链接；如需二维码可稍后手动安装："
-        log_info "  Debian/Ubuntu: apt-get update && apt-get install -y qrencode"
-        log_info "  CentOS/RHEL  : dnf install -y qrencode"
-        printf '链接：%s\n' "${content}"
-        return 1
-    fi
-    if (( ${#content} > 300 )); then
-        log_warn "链接长度 ${#content} 较长，部分客户端可能无法扫描该二维码"
-    fi
-    local cols
-    cols="$(tput cols 2>/dev/null || echo 80)"
-    if (( cols < 60 )); then
-        log_warn "终端宽度 ${cols} 较窄，二维码可能无法完整显示，请放大窗口"
-    fi
-    if ! qrencode -t ANSIUTF8 "${content}"; then
-        log_warn "终端二维码渲染失败，将输出文字链接"
-        printf '链接：%s\n' "${content}"
-        return 1
-    fi
-    return 0
-}
-
 confirm_show_secret() {
-    read -r -p "是否显示完整链接和二维码？二维码包含完整密码，请勿截图外传。[y/N]: " a
+    read -r -p "是否显示完整链接？完整链接包含密码，请勿公开分享。[y/N]: " a
     [[ "${a}" =~ ^[Yy]$ ]]
 }
 
-# 根据 ShadowTLS 状态选择"推荐公网导入用"的 URI 并显示完整链接 + 终端二维码
+# 根据 ShadowTLS 状态选择"推荐公网导入用"的 URI 并显示完整文字链接。
 #   - ShadowTLS 启用：使用 SS + ShadowTLS 合并链接（SIP002 plugin URI）
 #   - 否则：使用普通 SS2022 ss:// 链接
 # 不接收参数；从 info.json + collect_servers 自动取数。
-show_recommended_uri_and_qrcode() {
+show_recommended_uri() {
     if [[ "$(info_get '.ss2022.installed')" != "true" ]]; then
         log_warn "SS2022 未安装"
         return
@@ -2631,7 +2611,6 @@ show_recommended_uri_and_qrcode() {
             uri="$(generate_ss_shadowtls_uri "${server}" "${port}" "SS-STLS-${label}")"
             printf '\n--- %s (%s:%s) ---\n' "${label}" "${server}" "${port}"
             echo "${uri}"
-            generate_terminal_qrcode "${uri}"
         done < <(get_available_servers)
     else
         echo "=== 推荐：SS2022 ss:// 链接 ==="
@@ -2641,27 +2620,25 @@ show_recommended_uri_and_qrcode() {
             uri="$(generate_ss_uri "${server}" "${port}" "SS2022-${label}")"
             printf '\n--- %s (%s:%s) ---\n' "${label}" "${server}" "${port}"
             echo "${uri}"
-            generate_terminal_qrcode "${uri}"
         done < <(get_available_servers)
     fi
 }
 
-# 主入口：先显示遮蔽信息，询问后再显示完整链接 + 二维码
-show_node_info_with_qrcode() {
+# 主入口：先显示遮蔽信息，询问后再显示完整链接 + 客户端配置模板
+show_node_info_with_confirm() {
     show_node_info
     if confirm_show_secret; then
-        # 先显示推荐 URI + 终端二维码，再显示客户端配置模板，避免 URI 重复打印
-        show_recommended_uri_and_qrcode
+        show_recommended_uri
         show_full_node_info
     else
-        log_info "已取消显示完整链接和二维码"
+        log_info "已取消显示完整链接"
     fi
 }
 
-# 直接展示推荐 URI + 二维码（不询问），仅在用户主动安装/启用动作后调用
-show_recommended_full_uri_and_qrcode_no_confirm() {
-    log_warn "以下内容包含完整密码和二维码，请勿截图外传。"
-    show_recommended_uri_and_qrcode
+# 直接展示推荐 URI（不询问），仅在用户主动安装/启用动作后调用
+show_recommended_full_uri_no_confirm() {
+    log_warn "以下内容包含完整节点密码，请勿公开分享。"
+    show_recommended_uri
 }
 
 # 安装 SS2022 完成后的完整结果展示
@@ -2675,7 +2652,7 @@ show_install_result_full() {
     echo "SS2022 加密方式：${method}"
     echo "SS2022 密码    ：${password}"
     hr
-    show_recommended_full_uri_and_qrcode_no_confirm
+    show_recommended_full_uri_no_confirm
     hr
     log_info "客户端配置示例（sing-box / mihomo / Shadowrocket / Surge）可在主菜单「查看节点信息」中查看"
     if shortcut_installed; then
@@ -2700,7 +2677,7 @@ show_shadowtls_enable_result_full() {
     echo "ShadowTLS 域名   ：${stls_domain}"
     echo "ShadowTLS 密码   ：${stls_pw}"
     hr
-    show_recommended_full_uri_and_qrcode_no_confirm
+    show_recommended_full_uri_no_confirm
     hr
     log_info "客户端配置示例（sing-box / mihomo / Shadowrocket / Surge）可在主菜单「查看节点信息」中查看"
 }
@@ -3935,7 +3912,7 @@ dispatch() {
     case "${c}" in
         1) install_ss2022 ;;
         2) submenu_shadowtls ;;
-        3) show_node_info_with_qrcode ;;
+        3) show_node_info_with_confirm ;;
         4) submenu_service ;;
         5) submenu_network_time ;;
         6) submenu_advanced ;;

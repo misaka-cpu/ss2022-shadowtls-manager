@@ -43,7 +43,7 @@
 
 ---
 
-## 2.5 依赖安装（v1.0.1 / v1.0.2 修复点）
+## 2.5 依赖安装（v1.0.1 / v1.0.2 / v1.0.3 累积修复点）
 
 - ☐ Debian/Ubuntu 全新机器：主菜单 1 进入安装时，依赖阶段一次性执行 `apt-get install -y ca-certificates curl jq xz-utils iproute2 dnsutils`（一行批量，120 秒整体超时），不再逐包等 180 秒
 - ☐ CentOS/RHEL 9：依赖阶段一次性执行 `dnf install -y ca-certificates curl jq xz iproute bind-utils`（120 秒超时）
@@ -54,9 +54,8 @@
   - ☐ 短行分块输出软件源诊断（5 条原因 + 按发行版分段的手动命令）
   - ☐ **绝不**再输出 `[成功] 依赖检查完成`
   - ☐ **绝不**进入 "请选择 SS2022 加密方式"；主流程立即终止并返回菜单
-- ☐ qrencode 缺失时：依赖阶段只提示 "未检测到 qrencode（可选）" 与手动安装命令，**不**自动 apt/dnf 安装；不阻塞 SS2022 安装
-- ☐ qrencode 提示**只**在必需依赖全部就绪后出现；必需依赖失败时不再输出 qrencode 提示，避免误导
-- ☐ chrony 不在 SS2022 安装流程中处理；只有进入"自动校准时间"才询问安装
+- ☐ **(v1.0.3)** 依赖检查日志**不再**出现 `qrencode` 字样：相关检测、提示、手动命令全部移除
+- ☐ chrony 不在 SS2022 安装流程中处理；只有进入"自动校准时间"才提示手动安装命令
 - ☐ `apt-get update` / `dnf makecache` 索引更新：最多 60 秒，超时给出 "软件源响应过慢（60s 超时）" 警告但继续尝试已有索引
 - ☐ **(v1.0.2)** 输出格式：可能原因和命令按短行分块呈现，软件源命令前缀 `  Debian/Ubuntu:` 或 `  CentOS/RHEL:` 单独成行，单行不超过命令本身长度
 
@@ -64,12 +63,14 @@
 
 - ☐ 主菜单 1 → 选默认加密方式 → 输入端口 18388 → 自动生成密码 → mode `tcp_and_udp` → 监听模式 dual
 - ☐ 安装完成后自动创建 `/usr/local/bin/ss2022` wrapper（包含 `managed by ss2022-shadowtls-manager` 标记）
-- ☐ 安装完成后**直接显示**：`=== SS2022 安装完成 ===` + 完整加密方式/密码 + 推荐 SS2022 ss:// 链接 + **终端二维码**
-- ☐ 显示前有醒目 `[警告]` "以下内容包含完整密码和二维码，请勿截图外传"
+- ☐ 安装完成后**直接显示**：`=== SS2022 安装完成 ===` + 完整加密方式/密码 + 推荐 SS2022 ss:// 文字链接（**v1.0.3：不再渲染终端二维码**）
+- ☐ 显示前有醒目 `[警告]` "以下内容包含完整节点密码，请勿公开分享"
 - ☐ 退出 ss2022 命令后再次输入 `ss2022` 能进入菜单
 - ☐ 状态栏：SS2022 已安装 / 运行中 / 端口 18388 / 模式 tcp_and_udp
 - ☐ `systemctl is-active ss2022.service` = active
 - ☐ `ss -ltnp | grep ':18388 '` 看到 ssserver 占用
+- ☐ **(v1.0.3 安装路径无可选副作用)** 安装过程**不**自动执行：检测 qrencode、安装 chrony、启用 BBR、写 sysctl、改防火墙规则、修改 nftables、输出大段客户端模板、自动启用 ShadowTLS、检查更新
+- ☐ **(v1.0.3 防火墙)** 安装末尾对 SS2022 端口的处理：仅打印 `ufw allow ... / firewall-cmd --add-port ...` 手动命令并询问 `[y/N]` 默认 No；直接回车 → 防火墙规则零变化
 
 ### 边界
 - ☐ 自定义 PSK 留空 → 自动生成 24/44 字符 base64
@@ -83,7 +84,7 @@
 ## 4. 启用 ShadowTLS v3
 
 - ☐ 主菜单 2 → 启用 → 输入端口 8443 → 选伪装域名 1 (www.bing.com) → 自动生成 ShadowTLS 密码 → 自动切换 SS2022 为 tcp_only
-- ☐ 启用完成后**直接显示**：`=== ShadowTLS v3 启用完成 ===` + 完整 SS2022/STLS 密码 + 推荐 SS+ShadowTLS 合并链接 + **终端二维码**
+- ☐ 启用完成后**直接显示**：`=== ShadowTLS v3 启用完成 ===` + 完整 SS2022/STLS 密码 + 推荐 SS+ShadowTLS 合并文字链接（**v1.0.3：不再渲染终端二维码**）
 - ☐ 状态栏：ShadowTLS 已启用 / 运行中 / 端口 8443 / 伪装 www.bing.com
 - ☐ `ss -ltnp | grep ':8443 '` 看到 shadow-tls 占用
 - ☐ `ss -ltnp | grep '127.0.0.1:18388'` 看到 ssserver 仅本机监听
@@ -100,9 +101,9 @@
 ## 5. 查看节点信息
 
 - ☐ 主菜单 3 → 默认显示遮蔽信息：方法显示、密码 `abc***xyz`，ShadowTLS 启用时显示 "SS2022 本地后端：127.0.0.1:18388 (仅供排障)"
-- ☐ 提示 "是否显示完整链接和二维码？...[y/N]"
+- ☐ 提示 "是否显示完整链接？完整链接包含密码，请勿公开分享。[y/N]"（**v1.0.3：文案不再提及二维码**）
 - ☐ 用户 N → log_info 已取消，**不**显示完整信息
-- ☐ 用户 Y → 显示推荐 URI + 终端二维码 + 客户端配置模板（sing-box / mihomo / Shadowrocket / Surge）
+- ☐ 用户 Y → 显示推荐 URI + 客户端配置模板（sing-box / mihomo / Shadowrocket / Surge）；**不再**渲染终端二维码
 - ☐ ShadowTLS 启用时**只显示** "=== 推荐：SS2022 + ShadowTLS 合并链接 ===" 一段，不再有"普通 SS2022 ss:// 链接"
 - ☐ ShadowTLS 未启用时**只显示** "=== 推荐：SS2022 ss:// 链接 ==="
 
@@ -201,7 +202,7 @@
 - ☐ `/usr/local/bin/ss2022` 若提前手动创建为不带标记的同名脚本 → 卸载时**保留**该文件，明确提示 "不是本项目创建，保留"
 - ☐ `/etc/nftables.conf` 卸载前后 `md5sum` 一致
 - ☐ `/usr/local/sbin/` 下其它文件未被触碰
-- ☐ apt 包 `curl jq qrencode chrony wget` 全部仍在
+- ☐ apt 包 `curl jq chrony wget` 全部仍在（v1.0.3 起不再涉及 qrencode）
 
 ---
 
@@ -211,6 +212,12 @@
 - ☐ 若系统装有 `nftables-nat-rust-enhanced` 之类项目，其 `/etc/nftables.conf` 与 `/usr/local/sbin/update-nft-ddns-forwards.sh` 卸载前后**字节级一致**
 - ☐ 静态扫描脚本：`grep -nE 'nft (flush|-f|delete)' ss2022-shadowtls-manager.sh` 应**无任何输出**
 - ☐ `grep -nE '/etc/nftables\.conf' ss2022-shadowtls-manager.sh` 仅出现在注释和卸载总结文案中
+- ☐ **(v1.0.3) `ufw` / `firewalld` 不再自动放行**：
+  - ☐ 安装 SS2022 时 `open_firewall_port` 先打印 `ufw allow ${port}/${proto}` 或 `firewall-cmd --permanent --add-port=...` 手动命令
+  - ☐ 紧跟 `是否现在由本脚本执行该命令? [y/N]:`；直接回车 / N → 不执行任何防火墙命令，端口未自动放行
+  - ☐ 仅在用户输入 Y 时才执行对应的 `ufw allow` / `firewall-cmd --add-port` + `--reload`
+  - ☐ `nftables` / `nftables-present` 情景下永远只打印参考 `nft add rule` 命令，绝不执行 nft 写操作
+  - ☐ 启用 ShadowTLS、修改 SS / STLS 端口、UDP 模式切换共享同一询问逻辑
 
 ---
 
@@ -234,7 +241,7 @@
 ## 14. 反馈模板（用户报 bug 时请附）
 
 ```
-版本：v1.0.2
+版本：v1.0.3
 系统：Debian 12 / Ubuntu 22.04 / ...
 架构：x86_64 / aarch64
 

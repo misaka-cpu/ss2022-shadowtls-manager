@@ -8,6 +8,49 @@
 
 （暂无）
 
+## [v1.0.3] — 彻底移除二维码功能 + 防火墙改为按需手动确认
+
+### Changed — 安装流程进一步轻量化
+- **防火墙不再自动 `ufw allow` / `firewall-cmd --add-port`**。`open_firewall_port` 改为先打印手动命令，再询问 `[y/N]` 默认 **No**：
+  - 直接回车 / 任意非 `y` 输入 → 保持原状，只在日志中给出建议
+  - 仅在用户明确输入 `y` 时才执行 `ufw allow ${port}/${proto}` 或 `firewall-cmd --permanent --add-port=${port}/${proto} && firewall-cmd --reload`
+  - `nftables` / `nftables-present` 仍只打印参考命令，绝不修改规则（保持原有安全边界）
+  - 该函数被 `install_ss2022` / `enable_shadowtls` / 修改端口 / UDP 模式切换等所有入口共享，一处修改全局生效
+- 一键安装 SS2022 流程明确收敛为以下步骤（不做任何不需要的额外操作）：
+  1) root + 系统/架构检测
+  2) 必需依赖检查（缺失即终止）
+  3) 端口 / 加密方式 / 密码 / UDP 模式 / 监听模式输入
+  4) 下载 `ssserver`
+  5) 写配置 + 写 systemd
+  6) 防火墙：**只打印手动命令并询问，默认不修改**
+  7) `restart_service ss2022.service`
+  8) 自动创建 `/usr/local/bin/ss2022` wrapper（仅在不存在或为本项目标记时）
+  9) 显示完整 SS2022 文字链接
+- 安装流程**不再**自动执行：qrencode 检测、chrony 安装、BBR 设置、自动改防火墙、nftables 修改、客户端模板大段输出、ShadowTLS 自动启用、一键检查更新等任何可选行为
+- BBR / sysctl、客户端配置模板、UDP / 防火墙手动放行确认、一键检查更新、ShadowTLS 启用等仍可在「高级设置」/「网络与时间」/「查看节点信息」/「启用 ShadowTLS」/「一键检查更新」对应菜单中显式触发；不在安装路径中预热
+
+### Removed
+- **终端二维码渲染功能完全下线**：删除 `generate_terminal_qrcode()`、`show_recommended_uri_and_qrcode()`、`show_recommended_full_uri_and_qrcode_no_confirm()`、`show_node_info_with_qrcode()` 这一整组函数与所有 `qrencode -t ANSIUTF8` 调用路径
+- 同步删除：
+  - `PROJECT_QRCODE_DIR` 常量与对应 `mkdir -p` / `chmod 700` 调用（项目目录不再创建 `qrcode/` 子目录；卸载流程通过 `PROJECT_ETC` 整目录删除，已存在的旧子目录仍会被清理）
+  - `install_dependencies` 中检测 `qrencode` 并提示手动安装命令的整段逻辑（依赖检查完成后不再出现 qrencode 提示）
+  - 「查看节点信息」遮蔽视图末尾的 "(将显示推荐链接 / 客户端配置 / 二维码)" 措辞改为 "(将显示推荐完整链接 / 客户端配置)"
+
+### Changed
+- 函数重命名（无行为变化，仅去掉 `_qrcode` 词缀，便于阅读与 grep）：
+  - `show_recommended_uri_and_qrcode` → `show_recommended_uri`
+  - `show_recommended_full_uri_and_qrcode_no_confirm` → `show_recommended_full_uri_no_confirm`
+  - `show_node_info_with_qrcode` → `show_node_info_with_confirm`（主菜单 3 入口绑定同步更新）
+- `confirm_show_secret` 询问文案改为："是否显示完整链接？完整链接包含密码，请勿公开分享。[y/N]"
+- 安装 / 启用完成结果区只输出推荐文字链接 + 客户端配置示例提示；不再有"以下内容包含完整密码和二维码"等措辞
+- README 功能特点第 4 条改为 "安装/启用完成直接显示完整文字链接"；常见问题表删除 "二维码扫码失败" 一行；卸载摘要中 `apt 包` 示例去掉 `qrencode`；版本规划新增 v1.0.3 段
+- TESTING.md 第 3 / 4 / 5 节相关测试条目改为只校验"完整链接 + 客户端配置"展示，不再要求测试终端二维码
+- 版本号 `v1.0.2` → `v1.0.3`
+
+### Safety
+- 仍不修改 nftables / `/etc/nftables.conf` / `nftables-nat-rust-enhanced`
+- 主流程仍不会自动 `apt/dnf/yum install`；本版本无新增的高风险路径
+
 ## [v1.0.2] — 修复 v1.0.1 残留逻辑漏洞
 
 ### Fixed
