@@ -63,16 +63,23 @@ fi
 # -----------------------------------------------------------------------------
 print_source_hint() {
     local mgr="$1"
-    log_warn "可能原因：VPS → 软件源网络慢 / DNS 解析慢 / IPv6 路由异常 / 镜像源不可用 / 系统软件源配置异常"
-    log_warn "请手动执行以下命令确认软件源可用后重试："
+    log_warn "可能原因："
+    log_warn "  1) VPS 到软件源网络慢"
+    log_warn "  2) DNS 解析慢"
+    log_warn "  3) IPv6 路由异常"
+    log_warn "  4) 镜像源不可用"
+    log_warn "  5) 系统软件源配置异常"
+    log_warn "请手动测试软件源后重试："
     case "${mgr}" in
         dnf|yum)
-            log_warn "  ${mgr} makecache"
-            log_warn "  ${mgr} install -y ca-certificates curl"
+            log_warn "  CentOS/RHEL:"
+            log_warn "    ${mgr} makecache"
+            log_warn "    ${mgr} install -y ca-certificates curl"
             ;;
         *)
-            log_warn "  apt-get update"
-            log_warn "  apt-get install -y ca-certificates curl"
+            log_warn "  Debian/Ubuntu:"
+            log_warn "    apt-get update"
+            log_warn "    apt-get install -y ca-certificates curl"
             ;;
     esac
 }
