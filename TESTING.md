@@ -43,21 +43,22 @@
 
 ---
 
-## 2.5 依赖安装（v1.0.1 / v1.0.2 / v1.0.3 累积修复点）
+## 2.5 依赖检查（v1.0.4：主脚本不再自动安装系统依赖）
 
-- ☐ Debian/Ubuntu 全新机器：主菜单 1 进入安装时，依赖阶段一次性执行 `apt-get install -y ca-certificates curl jq xz-utils iproute2 dnsutils`（一行批量，120 秒整体超时），不再逐包等 180 秒
-- ☐ CentOS/RHEL 9：依赖阶段一次性执行 `dnf install -y ca-certificates curl jq xz iproute bind-utils`（120 秒超时）
-- ☐ 必需命令齐全时：依赖阶段直接打印 "必需依赖已满足，跳过批量安装"，零等待
-- ☐ **(v1.0.2 关键回归)** 必需依赖缺失且批量安装失败/超时：
-  - ☐ 日志清晰显示 `[错误] 必需依赖仍然缺失，无法继续安装 SS2022。`
-  - ☐ 紧跟一行 `缺失命令：jq xz/xzcat dig/nslookup` 之类的可读标签
-  - ☐ 短行分块输出软件源诊断（5 条原因 + 按发行版分段的手动命令）
-  - ☐ **绝不**再输出 `[成功] 依赖检查完成`
+- ☐ **(v1.0.4 核心)** 主菜单 1 进入安装时，依赖阶段**只做检查，不再调用 apt / dnf / yum**
+- ☐ 必需命令齐全时：依赖阶段只打印 `>>> 检查基础依赖` + `[成功] 必需依赖已满足`，零等待，立即进入加密方式选择
+- ☐ **(v1.0.4 关键)** 必需依赖缺失（如未安装 `jq` / `xz` / `dig` 任一）时：
+  - ☐ `[错误] 缺少必需依赖，无法继续安装 SS2022。`
+  - ☐ `[错误] 缺失项：` 后逐行列出 `  - jq` / `  - xz/xzcat` / `  - dig/nslookup` 等可读标签
+  - ☐ 紧跟 `[警告] 请先手动安装依赖：`，分别给出 Debian/Ubuntu 与 CentOS/RHEL 两段手动命令
+  - ☐ 输出 5 条常见原因（软件源慢 / DNS / IPv6 / 镜像源 / 配置异常）
+  - ☐ 结尾提示 `修复后重新运行：ss2022`
+  - ☐ **绝不**再调用 `apt-get update` / `apt-get install` / `dnf makecache` / `dnf install` / `yum makecache` / `yum install`
+  - ☐ **绝不**再输出 `[成功] 依赖检查完成` / `[成功] 必需依赖已满足`
   - ☐ **绝不**进入 "请选择 SS2022 加密方式"；主流程立即终止并返回菜单
-- ☐ **(v1.0.3)** 依赖检查日志**不再**出现 `qrencode` 字样：相关检测、提示、手动命令全部移除
-- ☐ chrony 不在 SS2022 安装流程中处理；只有进入"自动校准时间"才提示手动安装命令
-- ☐ `apt-get update` / `dnf makecache` 索引更新：最多 60 秒，超时给出 "软件源响应过慢（60s 超时）" 警告但继续尝试已有索引
-- ☐ **(v1.0.2)** 输出格式：可能原因和命令按短行分块呈现，软件源命令前缀 `  Debian/Ubuntu:` 或 `  CentOS/RHEL:` 单独成行，单行不超过命令本身长度
+- ☐ **(v1.0.4 静态校验)** `grep -nE "apt-get install|apt install|dnf install|yum install|apt-get update|dnf makecache|yum makecache" ss2022-shadowtls-manager.sh` 命中行**只**出现在 `log_warn` / `log_info` 字符串中（即手动命令提示文案），**不**出现在实际可执行路径中
+- ☐ **(v1.0.4)** `install.sh` 仍保留 curl / ca-certificates 的 bootstrap 安装能力（带 60s 索引 + 120s 安装超时），但**不再**安装 jq / xz / iproute / dnsutils / bind-utils
+- ☐ `qrencode` / `chrony` 不在 SS2022 安装流程中处理；时间同步未配置时只在「自动校准时间」中打印手动命令
 
 ## 3. 一键安装 SS2022
 
@@ -241,7 +242,7 @@
 ## 14. 反馈模板（用户报 bug 时请附）
 
 ```
-版本：v1.0.3
+版本：v1.0.4
 系统：Debian 12 / Ubuntu 22.04 / ...
 架构：x86_64 / aarch64
 

@@ -18,10 +18,10 @@ umask 077
 # 常量与路径定义（仅允许操作以下路径）
 # -----------------------------------------------------------------------------
 # 项目唯一版本常量；远程升级时从该常量提取版本号
-readonly MANAGER_VERSION="v1.0.3"
+readonly MANAGER_VERSION="v1.0.4"
 # 别名：兼容仍在 v0.1.5 及更早版本的客户端进行远程版本探测（它们 grep SCRIPT_VERSION）
 # 必须使用字面量字符串而非 "${MANAGER_VERSION}"，否则旧版客户端 grep + sed 提取到的是字面 ${MANAGER_VERSION}
-readonly SCRIPT_VERSION="v1.0.3"
+readonly SCRIPT_VERSION="v1.0.4"
 
 # 菜单返回码约定（v0.1.5）：
 #   - 普通返回（默认 0 / 非 10）：调用方按既有规则处理 press_any_key
@@ -191,94 +191,15 @@ detect_arch() {
 }
 
 # -----------------------------------------------------------------------------
-# 依赖安装：支持 apt-get（Debian/Ubuntu）、dnf / yum（RHEL 系）
-#   - 自动检测包管理器
-#   - 必需依赖一次性批量安装：索引更新 60s 超时，安装 120s 超时
-#   - 本脚本不再依赖 qrencode；chrony 仅时间同步备选，主流程不自动安装
-#   - 索引更新失败不致命，会继续尝试用已有索引安装
-#   - 包名按发行版差异自动映射：xz-utils↔xz、dnsutils↔bind-utils、iproute2↔iproute
+# 依赖检查（v1.0.4 起）：
+#   - 主脚本不再自动调用 apt / dnf / yum，避免软件源慢导致主流程卡住
+#   - 仅检测必需命令是否齐全；缺失时打印手动安装命令并停止当前安装流程
+#   - 包名按发行版差异给出：xz-utils↔xz、dnsutils↔bind-utils、iproute2↔iproute
+#   - chrony / qrencode / BBR / 防火墙均不在此处处理，保持可选或手动
 # -----------------------------------------------------------------------------
-
-# 当前包管理器：apt-get | dnf | yum | ""
-_PKG_MGR=""
-_pkg_mgr_detect() {
-    if [[ -n "${_PKG_MGR}" ]]; then return 0; fi
-    if command -v apt-get >/dev/null 2>&1; then _PKG_MGR="apt-get"; return 0; fi
-    if command -v dnf     >/dev/null 2>&1; then _PKG_MGR="dnf";     return 0; fi
-    if command -v yum     >/dev/null 2>&1; then _PKG_MGR="yum";     return 0; fi
-    _PKG_MGR=""
-    return 1
-}
 
 # 命令是否可用（封装），避免 grep / which 差异
 _have_cmd() { command -v "$1" >/dev/null 2>&1; }
-
-# 带超时的 shell 命令；timeout 不可用时退化为普通调用
-_run_with_timeout() {
-    local secs="$1"; shift
-    if _have_cmd timeout; then
-        timeout "${secs}" "$@"
-    else
-        "$@"
-    fi
-}
-
-# 仅执行一次的索引更新
-_PKG_INDEX_UPDATED=0
-pkg_update_index_once() {
-    [[ "${_PKG_INDEX_UPDATED}" -eq 1 ]] && return 0
-    _pkg_mgr_detect || { log_warn "未检测到 apt-get / dnf / yum，跳过索引更新"; _PKG_INDEX_UPDATED=1; return 0; }
-    log_info "正在更新软件包索引（最多等待 60 秒）..."
-    local rc=0
-    case "${_PKG_MGR}" in
-        apt-get) DEBIAN_FRONTEND=noninteractive _run_with_timeout 60 apt-get update -y >/dev/null 2>&1 || rc=$? ;;
-        dnf)     _run_with_timeout 60 dnf  makecache -y >/dev/null 2>&1 || rc=$? ;;
-        yum)     _run_with_timeout 60 yum  makecache    >/dev/null 2>&1 || rc=$? ;;
-    esac
-    if [[ ${rc} -eq 124 ]]; then
-        log_warn "软件源响应过慢（60s 超时），可能是网络、DNS、IPv6 或镜像源问题。继续使用已有索引。"
-    elif [[ ${rc} -ne 0 ]]; then
-        log_warn "软件源索引更新失败（rc=${rc}），继续尝试安装已有索引中的依赖。"
-    fi
-    _PKG_INDEX_UPDATED=1
-    return 0
-}
-
-# 网络源慢 / 软件源不可用时的统一手动命令提示
-# 短行分块输出，避免在窄终端被自动折行错位。
-_print_source_diagnostic_hint() {
-    log_warn "必需依赖安装超时或失败。"
-    log_warn "可能原因："
-    log_warn "  1) VPS 到软件源网络慢"
-    log_warn "  2) DNS 解析慢"
-    log_warn "  3) IPv6 路由异常"
-    log_warn "  4) 镜像源不可用"
-    log_warn "  5) 系统软件源配置异常"
-    log_warn "请手动测试软件源后重试："
-    if [[ "${OS_FAMILY}" == "rhel" ]] || [[ "${_PKG_MGR}" == "dnf" || "${_PKG_MGR}" == "yum" ]]; then
-        log_warn "  CentOS/RHEL:"
-        log_warn "    dnf makecache"
-        log_warn "    dnf install -y ca-certificates curl jq xz iproute bind-utils"
-    else
-        log_warn "  Debian/Ubuntu:"
-        log_warn "    apt-get update"
-        log_warn "    apt-get install -y ca-certificates curl jq xz-utils iproute2 dnsutils"
-    fi
-}
-
-# 必需依赖批量安装（一次性传所有缺失包给 apt/dnf/yum），整体 120s 超时
-# 返回 0 成功 / 124 超时 / 其它 = 失败
-_install_required_pkgs_batch() {
-    local rc=0
-    _pkg_mgr_detect || return 1
-    log_info "正在批量安装必需依赖：$* （最多等待 120 秒）..."
-    case "${_PKG_MGR}" in
-        apt-get) DEBIAN_FRONTEND=noninteractive _run_with_timeout 120 apt-get install -y "$@" >/dev/null 2>&1 || rc=$? ;;
-        dnf)     _run_with_timeout 120 dnf install -y "$@" >/dev/null 2>&1 || rc=$? ;;
-        yum)     _run_with_timeout 120 yum install -y "$@" >/dev/null 2>&1 || rc=$? ;;
-    esac
-    return ${rc}
-}
 
 # 必需命令是否都齐全；以空格分隔返回用户可读的缺失项标签。
 # 标签形式如 "curl"、"jq"、"xz/xzcat"、"dig/nslookup"、"ip"、"ss"，便于一眼看出该装哪个包。
@@ -293,85 +214,49 @@ _required_cmds_missing() {
     printf '%s' "${miss[*]}"
 }
 
+# 打印缺依赖时的手动安装提示（短行块状输出，避免窄终端折行错位）
+_print_manual_install_hint() {
+    log_warn "请先手动安装依赖："
+    log_warn ""
+    log_warn "Debian/Ubuntu:"
+    log_warn "  apt-get update"
+    log_warn "  apt-get install -y ca-certificates curl jq xz-utils iproute2 dnsutils"
+    log_warn ""
+    log_warn "CentOS/RHEL:"
+    log_warn "  dnf makecache"
+    log_warn "  dnf install -y ca-certificates curl jq xz iproute bind-utils"
+    log_warn ""
+    log_warn "常见原因："
+    log_warn "  1) 软件源网络慢"
+    log_warn "  2) DNS 解析异常"
+    log_warn "  3) IPv6 路由异常"
+    log_warn "  4) 镜像源不可用"
+    log_warn "  5) 系统软件源配置异常"
+    log_warn ""
+    log_warn "修复后重新运行："
+    log_warn "  ss2022"
+}
+
+# v1.0.4：仅做依赖检查，不再自动安装；缺依赖时返回 1，由调用方中止安装流程
 install_dependencies() {
-    log_step "检查并安装基础依赖"
-    if ! _pkg_mgr_detect; then
-        log_error "未检测到 apt-get / dnf / yum，无法安装必需依赖。"
-        log_warn "请手动安装必需依赖后重试："
-        log_warn "  Debian/Ubuntu:"
-        log_warn "    apt-get install -y ca-certificates curl jq xz-utils iproute2 dnsutils"
-        log_warn "  CentOS/RHEL:"
-        log_warn "    dnf install -y ca-certificates curl jq xz iproute bind-utils"
-        log_warn "chrony 仅在「网络与时间 → 自动校准时间」中按需手动安装，本脚本不会自动安装。"
-        return 1
-    fi
-    log_info "包管理器：${_PKG_MGR}（OS 家族：${OS_FAMILY}）"
-    log_info "必需依赖：curl jq xz ip ss dig"
-    log_info "可选依赖：chrony（仅时间同步备选，主流程不安装）"
+    log_step "检查基础依赖"
 
-    # 先尝试索引更新（失败仅警告，继续）
-    pkg_update_index_once
-
-    # 按发行版组装必需依赖的真实包名
-    local required_pkgs
-    if [[ "${OS_FAMILY}" == "rhel" ]] || [[ "${_PKG_MGR}" == "dnf" || "${_PKG_MGR}" == "yum" ]]; then
-        required_pkgs=(ca-certificates curl jq xz iproute bind-utils)
-    else
-        required_pkgs=(ca-certificates curl jq xz-utils iproute2 dnsutils)
+    local missing
+    missing="$(_required_cmds_missing)"
+    if [[ -z "${missing}" ]]; then
+        log_ok "必需依赖已满足"
+        return 0
     fi
 
-    # 已经满足时直接跳过批量安装，避免无谓 apt/dnf 调用
-    local pre_missing install_rc=0 install_attempted=0
-    pre_missing="$(_required_cmds_missing)"
-    if [[ -z "${pre_missing}" ]]; then
-        log_ok "必需依赖已满足，跳过批量安装"
-    else
-        log_info "缺失必需命令：${pre_missing}"
-        log_info "将一次性批量安装：${required_pkgs[*]}"
-        install_attempted=1
-        _install_required_pkgs_batch "${required_pkgs[@]}" || install_rc=$?
-        case "${install_rc}" in
-            0)
-                log_info "apt/dnf 安装命令已返回成功；将再次校验命令是否齐全"
-                ;;
-            124)
-                log_warn "批量安装必需依赖超时（120s）"
-                _print_source_diagnostic_hint
-                ;;
-            *)
-                log_warn "批量安装必需依赖失败（rc=${install_rc}）"
-                _print_source_diagnostic_hint
-                ;;
-        esac
-    fi
-
-    # 不论 install_rc 如何，都以"命令是否真的存在"作为最终判定。
-    # 这样能覆盖：apt-get install 报 0 但实际部分包未装、超时后部分包已装等情况。
-    local post_missing
-    post_missing="$(_required_cmds_missing)"
-    if [[ -n "${post_missing}" ]]; then
-        log_error "必需依赖仍然缺失，无法继续安装 SS2022。"
-        log_error "缺失命令：${post_missing}"
-        log_warn "请手动修复软件源后执行以下命令补齐依赖："
-        if [[ "${OS_FAMILY}" == "rhel" ]] || [[ "${_PKG_MGR}" == "dnf" || "${_PKG_MGR}" == "yum" ]]; then
-            log_warn "  CentOS/RHEL:"
-            log_warn "    dnf makecache"
-            log_warn "    dnf install -y ca-certificates curl jq xz iproute bind-utils"
-        else
-            log_warn "  Debian/Ubuntu:"
-            log_warn "    apt-get update"
-            log_warn "    apt-get install -y ca-certificates curl jq xz-utils iproute2 dnsutils"
-        fi
-        log_warn "补齐依赖后请重新运行：ss2022"
-        return 1
-    fi
-
-    if (( install_attempted == 1 )) && [[ ${install_rc} -eq 0 ]]; then
-        log_ok "批量安装必需依赖完成"
-    fi
-
-    log_ok "依赖检查完成（必需依赖全部就绪）"
-    return 0
+    log_error "缺少必需依赖，无法继续安装 SS2022。"
+    log_error "缺失项："
+    local item
+    for item in ${missing}; do
+        log_error "  - ${item}"
+    done
+    echo
+    _print_manual_install_hint
+    return 1
 }
 
 # -----------------------------------------------------------------------------

@@ -8,6 +8,64 @@
 
 （暂无）
 
+## [v1.0.4] — 主脚本取消自动安装系统依赖
+
+### Changed — 安装流程不再调用 apt / dnf / yum
+- **主脚本不再自动安装任何系统依赖**。v1.0.3 在软件源 / DNS / IPv6 异常时仍会卡在 `apt-get install -y ca-certificates curl jq xz-utils iproute2 dnsutils`（即使 120s 超时，体验仍然差）。v1.0.4 起 `install_dependencies()` 只做必需命令存在性检查：
+  - 全部存在 → `[成功] 必需依赖已满足` 并 `return 0`，继续后续安装流程
+  - 任一缺失 → `[错误] 缺少必需依赖，无法继续安装 SS2022。` + 列出缺失项 + 按发行版给出手动安装命令 + 常见原因 + 重新运行提示，然后 `return 1`
+  - 调用方 `install_ss2022` / `enable_shadowtls` 通过 `if ! install_dependencies; then return 1; fi` 立即中止当前安装流程，回到主菜单（**不会**进入加密方式选择 / 端口输入等后续交互）
+- **主脚本删除以下自动安装代码路径**（仅保留文案 / 提示中的命令字符串）：
+  - `_install_required_pkgs_batch`（apt/dnf/yum 批量安装 + 120s 超时）
+  - `pkg_update_index_once`（`apt-get update` / `dnf makecache` + 60s 超时）
+  - `_print_source_diagnostic_hint`（被新的 `_print_manual_install_hint` 取代）
+  - `_pkg_mgr_detect` / `_PKG_MGR` / `_PKG_INDEX_UPDATED` 全局状态
+  - `_run_with_timeout` 包装（主脚本不再有任何需要包超时调用 apt/dnf/yum 的位置）
+- `install.sh` 保留 curl / ca-certificates 的 bootstrap 安装（含 60s 索引 + 120s 安装超时），因为它本就是 bootstrap 角色；但**不再**安装 jq / xz / iproute / dnsutils / bind-utils，那些交由主脚本检查并提示用户手动安装
+
+### Changed — 依赖检查输出
+- 输出改为短行块状，避免窄终端折行错位：
+  ```
+  >>> 检查基础依赖
+  [错误] 缺少必需依赖，无法继续安装 SS2022。
+  [错误] 缺失项：
+  [错误]   - jq
+  [错误]   - xz/xzcat
+  [错误]   - dig/nslookup
+
+  [警告] 请先手动安装依赖：
+  [警告]
+  [警告] Debian/Ubuntu:
+  [警告]   apt-get update
+  [警告]   apt-get install -y ca-certificates curl jq xz-utils iproute2 dnsutils
+  [警告]
+  [警告] CentOS/RHEL:
+  [警告]   dnf makecache
+  [警告]   dnf install -y ca-certificates curl jq xz iproute bind-utils
+  [警告]
+  [警告] 常见原因：
+  [警告]   1) 软件源网络慢
+  [警告]   2) DNS 解析异常
+  [警告]   3) IPv6 路由异常
+  [警告]   4) 镜像源不可用
+  [警告]   5) 系统软件源配置异常
+  [警告]
+  [警告] 修复后重新运行：
+  [警告]   ss2022
+  ```
+- 依赖齐全时不再输出冗长的"包管理器：apt-get …"、"必需依赖：…"、"将一次性批量安装：…" 等行，只保留一行 `[成功] 必需依赖已满足`
+
+### Changed
+- 版本号 `v1.0.3` → `v1.0.4`；README / 状态栏 / 主菜单标题同步
+- README 版本规划新增 v1.0.4 段，原 v1.0.3 去掉"（当前）"标记
+- TESTING.md 第 2.x 节相关测试条目改为校验：缺依赖时立即停止、不进入加密方式选择、主脚本不再执行 apt/dnf/yum
+
+### Safety
+- 仍不修改 nftables / `/etc/nftables.conf` / `nftables-nat-rust-enhanced`
+- 仍不自动 `ufw allow` / `firewall-cmd --add-port`
+- 主脚本不再自动调用 `apt/dnf/yum`；唯一仍可能触发系统包管理器的位置是 `install.sh` 的 bootstrap 阶段（仅 curl + ca-certificates）
+- 修改范围仅限 `ss2022-shadowtls-manager.sh` 的 `install_dependencies` 及其私有 helper、`README.md`、`CHANGELOG.md`、`TESTING.md`；`install.sh` 行为保持不变
+
 ## [v1.0.3] — 彻底移除二维码功能 + 防火墙改为按需手动确认
 
 ### Changed — 安装流程进一步轻量化
