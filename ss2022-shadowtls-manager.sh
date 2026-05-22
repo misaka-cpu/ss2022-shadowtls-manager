@@ -18,10 +18,10 @@ umask 077
 # 常量与路径定义（仅允许操作以下路径）
 # -----------------------------------------------------------------------------
 # 项目唯一版本常量；远程升级时从该常量提取版本号
-readonly MANAGER_VERSION="v1.0.4"
+readonly MANAGER_VERSION="v1.0.5"
 # 别名：兼容仍在 v0.1.5 及更早版本的客户端进行远程版本探测（它们 grep SCRIPT_VERSION）
 # 必须使用字面量字符串而非 "${MANAGER_VERSION}"，否则旧版客户端 grep + sed 提取到的是字面 ${MANAGER_VERSION}
-readonly SCRIPT_VERSION="v1.0.4"
+readonly SCRIPT_VERSION="v1.0.5"
 
 # 菜单返回码约定（v0.1.5）：
 #   - 普通返回（默认 0 / 非 10）：调用方按既有规则处理 press_any_key
@@ -191,9 +191,10 @@ detect_arch() {
 }
 
 # -----------------------------------------------------------------------------
-# 依赖检查（v1.0.4 起）：
-#   - 主脚本不再自动调用 apt / dnf / yum，避免软件源慢导致主流程卡住
-#   - 仅检测必需命令是否齐全；缺失时打印手动安装命令并停止当前安装流程
+# 依赖检查（v1.0.5 起）：
+#   - 默认不自动调用 apt / dnf；缺失时先询问 [y/N]，回车默认 No
+#   - 用户明确输入 y 才按当前发行版批量安装必需依赖，并在安装后重新检查
+#   - 未选择自动安装时只显示当前系统对应的一行手动修复命令
 #   - 包名按发行版差异给出：xz-utils↔xz、dnsutils↔bind-utils、iproute2↔iproute
 #   - chrony / qrencode / BBR / 防火墙均不在此处处理，保持可选或手动
 # -----------------------------------------------------------------------------
@@ -214,30 +215,93 @@ _required_cmds_missing() {
     printf '%s' "${miss[*]}"
 }
 
-# 打印缺依赖时的手动安装提示（短行块状输出，避免窄终端折行错位）
+# 打印当前系统对应的手动修复命令；未知系统才显示两套命令。
+_print_current_manual_install_command() {
+    local logger="${1:-log_warn}"
+    case "${OS_FAMILY}" in
+        debian)
+            "${logger}" "  apt-get update && apt-get install -y ca-certificates curl jq xz-utils iproute2 dnsutils"
+            ;;
+        rhel)
+            "${logger}" "  dnf makecache && dnf install -y ca-certificates curl jq xz iproute bind-utils"
+            ;;
+        *)
+            "${logger}" "  Debian/Ubuntu:"
+            "${logger}" "    apt-get update && apt-get install -y ca-certificates curl jq xz-utils iproute2 dnsutils"
+            "${logger}" "  CentOS/RHEL:"
+            "${logger}" "    dnf makecache && dnf install -y ca-certificates curl jq xz iproute bind-utils"
+            ;;
+    esac
+}
+
 _print_manual_install_hint() {
-    log_warn "请先手动安装依赖："
-    log_warn ""
-    log_warn "Debian/Ubuntu:"
-    log_warn "  apt-get update"
-    log_warn "  apt-get install -y ca-certificates curl jq xz-utils iproute2 dnsutils"
-    log_warn ""
-    log_warn "CentOS/RHEL:"
-    log_warn "  dnf makecache"
-    log_warn "  dnf install -y ca-certificates curl jq xz iproute bind-utils"
-    log_warn ""
-    log_warn "常见原因："
-    log_warn "  1) 软件源网络慢"
-    log_warn "  2) DNS 解析异常"
-    log_warn "  3) IPv6 路由异常"
-    log_warn "  4) 镜像源不可用"
-    log_warn "  5) 系统软件源配置异常"
+    log_warn "推荐修复命令："
+    _print_current_manual_install_command log_warn
     log_warn ""
     log_warn "修复后重新运行："
     log_warn "  ss2022"
 }
 
-# v1.0.4：仅做依赖检查，不再自动安装；缺依赖时返回 1，由调用方中止安装流程
+_print_auto_install_failed_hint() {
+    log_error "自动安装依赖失败或超时。"
+    log_error "可能原因："
+    log_error "  1) 软件源网络慢"
+    log_error "  2) DNS 解析异常"
+    log_error "  3) IPv6 路由异常"
+    log_error "  4) 镜像源不可用"
+    log_error "  5) 系统软件源配置异常"
+    echo
+    log_error "请手动执行："
+    _print_current_manual_install_command log_error
+    echo
+    log_error "修复后重新运行："
+    log_error "  ss2022"
+}
+
+_run_dep_cmd_with_timeout() {
+    local secs="$1"
+    shift
+    if _have_cmd timeout; then
+        timeout "${secs}s" "$@"
+    else
+        "$@"
+    fi
+}
+
+_auto_install_required_deps() {
+    if ! _have_cmd timeout; then
+        log_warn "当前系统没有 timeout 命令，安装过程可能受软件源速度影响。"
+    fi
+
+    case "${OS_FAMILY}" in
+        debian)
+            if ! _have_cmd apt-get; then
+                log_error "未检测到 apt-get，无法自动安装依赖。"
+                return 1
+            fi
+            log_info "正在更新软件源索引..."
+            _run_dep_cmd_with_timeout 60 apt-get update || return 1
+            log_info "正在安装必需依赖..."
+            _run_dep_cmd_with_timeout 120 apt-get install -y ca-certificates curl jq xz-utils iproute2 dnsutils || return 1
+            ;;
+        rhel)
+            if ! _have_cmd dnf; then
+                log_error "未检测到 dnf，无法自动安装依赖。"
+                return 1
+            fi
+            log_info "正在更新软件源索引..."
+            _run_dep_cmd_with_timeout 60 dnf makecache || return 1
+            log_info "正在安装必需依赖..."
+            _run_dep_cmd_with_timeout 120 dnf install -y ca-certificates curl jq xz iproute bind-utils || return 1
+            ;;
+        *)
+            log_error "无法识别当前系统，未自动安装依赖。"
+            return 1
+            ;;
+    esac
+}
+
+# v1.0.5：默认仅检查；用户明确输入 y 时才批量安装必需依赖并二次检查。
 install_dependencies() {
     log_step "检查基础依赖"
 
@@ -254,6 +318,32 @@ install_dependencies() {
     for item in ${missing}; do
         log_error "  - ${item}"
     done
+
+    local ans
+    read -r -p "是否现在尝试自动安装缺失依赖？[y/N]: " ans
+    if [[ "${ans}" =~ ^[Yy]$ ]]; then
+        if ! _auto_install_required_deps; then
+            echo
+            _print_auto_install_failed_hint
+            return 1
+        fi
+
+        missing="$(_required_cmds_missing)"
+        if [[ -z "${missing}" ]]; then
+            log_ok "必需依赖已满足"
+            return 0
+        fi
+
+        log_error "必需依赖仍然缺失，无法继续安装 SS2022。"
+        log_error "缺失项："
+        for item in ${missing}; do
+            log_error "  - ${item}"
+        done
+        echo
+        _print_manual_install_hint
+        return 1
+    fi
+
     echo
     _print_manual_install_hint
     return 1

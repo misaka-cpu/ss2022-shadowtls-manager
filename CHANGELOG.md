@@ -8,6 +8,24 @@
 
 （暂无）
 
+## [v1.0.5] — 缺依赖提示体验优化
+
+### Changed
+- 优化缺依赖时的新手引导：缺少必需依赖时先列出缺失项，再询问 `是否现在尝试自动安装缺失依赖？[y/N]:`，默认回车不执行安装。
+- 缺依赖时只显示当前系统对应的手动修复命令：Debian/Ubuntu 显示 `apt-get update && apt-get install ...`，CentOS/RHEL 显示 `dnf makecache && dnf install ...`；系统未知时才显示两套命令。
+- 增加用户确认后自动安装必需依赖选项：只有输入 `y` / `Y` 才执行，且仅批量安装 `ca-certificates curl jq xz-utils/xz iproute2/iproute dnsutils/bind-utils`，不安装 `qrencode` / `chrony`。
+- 自动安装使用短超时：索引更新最多 60 秒，包安装最多 120 秒；系统没有 `timeout` 时会提示安装过程可能受软件源速度影响。
+- 自动安装后重新执行 `_required_cmds_missing` 二次检查；依赖齐全才继续，依赖仍缺失或自动安装失败 / 超时时直接停止当前 SS2022 安装流程，不会进入加密方式选择。
+- `install.sh` 继续保持最小 bootstrap：只处理 `curl` / `ca-certificates`、下载主脚本、`bash -n` 校验、创建 `ss2022` 快捷命令并打开主菜单，不安装 jq / xz / iproute2 / dnsutils。
+
+### Docs
+- 版本号 `v1.0.4` → `v1.0.5`；README / 状态栏 / 主菜单标题同步。
+- TESTING.md 增加缺依赖时回车默认不自动安装、输入 `y` 才尝试安装、安装失败不会进入加密方式选择的测试项。
+
+### Safety
+- 默认策略仍是不自动安装系统依赖；只有用户明确输入 `y` 才会调用包管理器。
+- 自动安装路径不触碰 `systemctl`、防火墙、nftables、`/etc/nftables.conf` 或 `nftables-nat-rust-enhanced`。
+
 ## [v1.0.4] — 主脚本取消自动安装系统依赖
 
 ### Changed — 安装流程不再调用 apt / dnf / yum

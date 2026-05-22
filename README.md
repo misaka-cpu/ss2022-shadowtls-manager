@@ -4,7 +4,7 @@ SS2022 + ShadowTLS v3 一体化管理脚本，适用于 Debian / Ubuntu / CentOS
 
 ## 当前状态
 
-- 当前版本：**v1.0.4**
+- 当前版本：**v1.0.5**
 - 状态：**稳定版**
 - 已在 Debian / Ubuntu / CentOS 9 上经过实测；仍建议先在干净 Debian / Ubuntu / CentOS 测试后再用于长期环境
 
@@ -42,11 +42,12 @@ SS2022 + ShadowTLS v3 一体化管理脚本，适用于 Debian / Ubuntu / CentOS
 bash <(curl -fsSL https://raw.githubusercontent.com/misaka-cpu/ss2022-shadowtls-manager/main/install.sh)
 ```
 
-`install.sh` 只做四件事：
+`install.sh` 只做最小 bootstrap：
 1. 检查 root + `curl` / `ca-certificates`
-2. 下载主脚本到 `/tmp` 临时文件，`bash -n` 校验通过才覆盖
-3. 备份旧版本到 `${INSTALL_PATH}.bak.YYYYMMDD-HHMMSS`
-4. `exec /root/ss2022-shadowtls-manager.sh` 直接进入交互菜单
+2. 下载主脚本到 `/tmp` 临时文件并执行 `bash -n` 校验
+3. 备份旧版本并安装主脚本
+4. 创建或更新本项目的 `ss2022` 快捷命令
+5. `exec /root/ss2022-shadowtls-manager.sh` 直接进入交互菜单
 
 > 仓库 Private 时 `raw.githubusercontent.com` 无法直接访问，请改用 `scp` 或 `git pull` 把 `ss2022-shadowtls-manager.sh` 同步到 `/root/`，然后 `chmod +x && /root/ss2022-shadowtls-manager.sh`。
 
@@ -84,8 +85,8 @@ ss2022
 ## 主菜单
 
 ```
-SS2022 + ShadowTLS 管理脚本 v1.0.4
-版本：v1.0.4   监听模式：dual   IPv4：x.x.x.x   IPv6：xxxx::xxxx
+SS2022 + ShadowTLS 管理脚本 v1.0.5
+版本：v1.0.5   监听模式：dual   IPv4：x.x.x.x   IPv6：xxxx::xxxx
 SS2022    ：已安装 / 运行中   端口：18388   模式：tcp_only
 ShadowTLS ：已启用 / 运行中   端口：8443    伪装：www.bing.com
 时间同步：已同步   快捷命令：ss2022
@@ -164,7 +165,8 @@ ShadowTLS ：已启用 / 运行中   端口：8443    伪装：www.bing.com
 - **v1.0.1**：修复依赖安装在网络源慢时长时间卡住的体验问题——必需依赖批量安装并收紧超时（索引 60s / 安装 120s）、`qrencode` / `chrony` 改为可选不再默认阻塞、超时/失败给出软件源诊断与手动命令
 - **v1.0.2**：修复 v1.0.1 残留逻辑漏洞——必需依赖安装失败 / 超时后脚本必定停止并返回菜单（绝不再输出"依赖检查完成"）、错误提示与软件源诊断改为短行分块、缺失命令以 `jq / xz/xzcat / dig/nslookup / ip / ss` 等用户可读形式列出；时间同步路径不再自动安装 chrony
 - **v1.0.3**：彻底移除终端二维码渲染功能与对 `qrencode` 的依赖；安装 / 启用完成与「查看节点信息」均只输出完整文字链接 + 客户端配置模板。安装流程进一步轻量化：防火墙改为打印手动命令 + `[y/N]` 默认 No；BBR / 客户端模板大段输出 / 一键检查更新 / chrony 等可选功能全部不在安装路径中触发，仅在对应高级菜单按需调用
-- **v1.0.4**（当前）：主脚本取消自动安装系统依赖，避免软件源慢导致主流程长时间卡住。缺少必需依赖时打印按发行版分组的手动安装命令并停止当前安装流程返回菜单，不再进入加密方式选择；`install.sh` 仍保留 curl / ca-certificates 的最小 bootstrap，主脚本则不再调用 apt / dnf / yum
+- **v1.0.4**：主脚本取消自动安装系统依赖，避免软件源慢导致主流程长时间卡住。缺少必需依赖时打印按发行版分组的手动安装命令并停止当前安装流程返回菜单，不再进入加密方式选择；`install.sh` 仍保留 curl / ca-certificates 的最小 bootstrap
+- **v1.0.5**（当前）：优化缺依赖时的新手引导。缺少必需依赖时先询问是否自动安装，默认 No；只有输入 `y` 才按当前系统批量安装必需依赖，并在安装后二次检查。手动修复命令只显示当前系统对应的一行命令，自动安装失败或依赖仍缺失时不会继续进入 SS2022 安装流程
 - **v1.0.x**：仅修复缺陷，不引入 breaking change
 
 ## 贡献 / 反馈
