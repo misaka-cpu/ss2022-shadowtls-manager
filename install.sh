@@ -21,6 +21,7 @@
 set -o pipefail
 umask 077
 
+readonly INSTALLER_VERSION="v1.0.7"
 readonly SCRIPT_URL="https://raw.githubusercontent.com/misaka-cpu/ss2022-shadowtls-manager/main/ss2022-shadowtls-manager.sh"
 readonly INSTALL_PATH="/root/ss2022-shadowtls-manager.sh"
 readonly SHORTCUT_PATH="/usr/local/bin/ss2022"

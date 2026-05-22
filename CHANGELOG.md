@@ -8,6 +8,13 @@
 
 （暂无）
 
+## [v1.0.7] — 统一版本常量
+
+### Changed
+- 同步安装器版本常量 `INSTALLER_VERSION`。
+- 统一 `MANAGER_VERSION` / `SCRIPT_VERSION` / `INSTALLER_VERSION` 为 `v1.0.7`。
+- 避免 GitHub 文件列表和版本显示不一致。
+
 ## [v1.0.6] — 缺依赖提示体验优化
 
 ### Changed

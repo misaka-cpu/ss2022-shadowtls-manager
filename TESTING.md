@@ -242,6 +242,7 @@
 
 - ☐ README 一行安装命令可被复制粘贴运行
 - ☐ README 显示当前版本号与 SCRIPT_VERSION 常量一致
+- ☐ install.sh 包含 `readonly INSTALLER_VERSION="v1.0.7"`，并与 MANAGER_VERSION / SCRIPT_VERSION 一致
 - ☐ CHANGELOG 包含从 v0.1.0 到当前版本的条目
 - ☐ TESTING.md（本文件）与实际行为一致
 
@@ -250,7 +251,7 @@
 ## 14. 反馈模板（用户报 bug 时请附）
 
 ```
-版本：v1.0.6
+版本：v1.0.7
 系统：Debian 12 / Ubuntu 22.04 / ...
 架构：x86_64 / aarch64
 
