@@ -18,10 +18,10 @@ umask 077
 # 常量与路径定义（仅允许操作以下路径）
 # -----------------------------------------------------------------------------
 # 项目唯一版本常量；远程升级时从该常量提取版本号
-readonly MANAGER_VERSION="v1.0.7"
+readonly MANAGER_VERSION="v1.0.8"
 # 别名：兼容仍在 v0.1.5 及更早版本的客户端进行远程版本探测（它们 grep SCRIPT_VERSION）
 # 必须使用字面量字符串而非 "${MANAGER_VERSION}"，否则旧版客户端 grep + sed 提取到的是字面 ${MANAGER_VERSION}
-readonly SCRIPT_VERSION="v1.0.7"
+readonly SCRIPT_VERSION="v1.0.8"
 
 # 菜单返回码约定（v0.1.5）：
 #   - 普通返回（默认 0 / 非 10）：调用方按既有规则处理 press_any_key
@@ -191,7 +191,7 @@ detect_arch() {
 }
 
 # -----------------------------------------------------------------------------
-# 依赖检查（v1.0.6 起）：
+# 依赖检查（v1.0.8 起）：
 #   - 默认不自动调用 apt / dnf；缺失时先询问 [y/N]，回车默认 No
 #   - 用户明确输入 y 才按当前发行版批量安装必需依赖，并在安装后重新检查
 #   - 未选择自动安装时只显示当前系统对应的一行手动修复命令
@@ -215,47 +215,94 @@ _required_cmds_missing() {
     printf '%s' "${miss[*]}"
 }
 
+# 打印缺失项与修复命令时使用块状输出，避免每行重复日志前缀。
+_print_missing_items_plain() {
+    local item
+    for item in $1; do
+        printf '  - %s\n' "${item}"
+    done
+}
+
+_rhel_pkg_mgr_for_dependency_hint() {
+    if _have_cmd dnf; then
+        printf 'dnf'
+    elif _have_cmd yum; then
+        printf 'yum'
+    else
+        printf 'dnf'
+    fi
+}
+
 # 打印当前系统对应的手动修复命令；未知系统才显示两套命令。
-_print_current_manual_install_command() {
-    local logger="${1:-log_warn}"
+_print_current_manual_install_command_plain() {
+    local mgr
     case "${OS_FAMILY}" in
         debian)
-            "${logger}" "  apt-get update && apt-get install -y ca-certificates curl jq xz-utils iproute2 dnsutils"
+            cat <<'EOF'
+  apt-get update && \
+  apt-get install -y ca-certificates curl jq xz-utils iproute2 dnsutils
+EOF
             ;;
         rhel)
-            "${logger}" "  dnf makecache && dnf install -y ca-certificates curl jq xz iproute bind-utils"
+            mgr="$(_rhel_pkg_mgr_for_dependency_hint)"
+            cat <<EOF
+  ${mgr} makecache && \\
+  ${mgr} install -y ca-certificates curl jq xz iproute bind-utils
+EOF
             ;;
         *)
-            "${logger}" "  Debian/Ubuntu:"
-            "${logger}" "    apt-get update && apt-get install -y ca-certificates curl jq xz-utils iproute2 dnsutils"
-            "${logger}" "  CentOS/RHEL:"
-            "${logger}" "    dnf makecache && dnf install -y ca-certificates curl jq xz iproute bind-utils"
+            mgr="$(_rhel_pkg_mgr_for_dependency_hint)"
+            cat <<EOF
+  Debian/Ubuntu:
+    apt-get update && \\
+    apt-get install -y ca-certificates curl jq xz-utils iproute2 dnsutils
+
+  CentOS/RHEL:
+    ${mgr} makecache && \\
+    ${mgr} install -y ca-certificates curl jq xz iproute bind-utils
+EOF
             ;;
     esac
 }
 
-_print_manual_install_hint() {
-    log_warn "推荐修复命令："
-    _print_current_manual_install_command log_warn
-    log_warn ""
-    log_warn "修复后重新运行："
-    log_warn "  ss2022"
+_print_dependency_failure_block() {
+    local missing="$1"
+    log_error "缺少必需依赖，无法继续安装 SS2022。"
+    {
+        printf '\n缺失项：\n'
+        _print_missing_items_plain "${missing}"
+        printf '\n推荐修复命令：\n'
+        _print_current_manual_install_command_plain
+        cat <<'EOF'
+
+常见原因：
+  1) 软件源网络慢
+  2) DNS 解析异常
+  3) IPv6 路由异常
+  4) 镜像源不可用
+  5) 系统软件源配置异常
+
+修复后重新运行：
+  ss2022
+
+EOF
+    } >&2
 }
 
-_print_auto_install_failed_hint() {
-    log_error "自动安装依赖失败或超时。"
-    log_error "可能原因："
-    log_error "  1) 软件源网络慢"
-    log_error "  2) DNS 解析异常"
-    log_error "  3) IPv6 路由异常"
-    log_error "  4) 镜像源不可用"
-    log_error "  5) 系统软件源配置异常"
-    echo
-    log_error "请手动执行："
-    _print_current_manual_install_command log_error
-    echo
-    log_error "修复后重新运行："
-    log_error "  ss2022"
+_print_auto_install_failed_block() {
+    local missing="$1"
+    log_error "自动安装依赖失败，仍缺少："
+    {
+        _print_missing_items_plain "${missing}"
+        printf '\n请手动执行：\n'
+        _print_current_manual_install_command_plain
+        cat <<'EOF'
+
+修复后重新运行：
+  ss2022
+
+EOF
+    } >&2
 }
 
 _run_dep_cmd_with_timeout() {
@@ -273,35 +320,44 @@ _auto_install_required_deps() {
         log_warn "当前系统没有 timeout 命令，安装过程可能受软件源速度影响。"
     fi
 
+    local mgr update_rc=0 install_rc=0
     case "${OS_FAMILY}" in
         debian)
             if ! _have_cmd apt-get; then
                 log_error "未检测到 apt-get，无法自动安装依赖。"
-                return 1
+                return 127
             fi
             log_info "正在更新软件源索引..."
-            _run_dep_cmd_with_timeout 60 apt-get update || return 1
+            _run_dep_cmd_with_timeout 60 apt-get update || update_rc=$?
+            if [[ ${update_rc} -ne 0 ]]; then
+                log_warn "软件源索引更新失败或超时，继续尝试安装依赖。"
+            fi
             log_info "正在安装必需依赖..."
-            _run_dep_cmd_with_timeout 120 apt-get install -y ca-certificates curl jq xz-utils iproute2 dnsutils || return 1
+            _run_dep_cmd_with_timeout 120 apt-get install -y ca-certificates curl jq xz-utils iproute2 dnsutils || install_rc=$?
             ;;
         rhel)
-            if ! _have_cmd dnf; then
-                log_error "未检测到 dnf，无法自动安装依赖。"
-                return 1
+            mgr="$(_rhel_pkg_mgr_for_dependency_hint)"
+            if ! _have_cmd "${mgr}"; then
+                log_error "未检测到 dnf / yum，无法自动安装依赖。"
+                return 127
             fi
             log_info "正在更新软件源索引..."
-            _run_dep_cmd_with_timeout 60 dnf makecache || return 1
+            _run_dep_cmd_with_timeout 60 "${mgr}" makecache || update_rc=$?
+            if [[ ${update_rc} -ne 0 ]]; then
+                log_warn "软件源索引更新失败或超时，继续尝试安装依赖。"
+            fi
             log_info "正在安装必需依赖..."
-            _run_dep_cmd_with_timeout 120 dnf install -y ca-certificates curl jq xz iproute bind-utils || return 1
+            _run_dep_cmd_with_timeout 120 "${mgr}" install -y ca-certificates curl jq xz iproute bind-utils || install_rc=$?
             ;;
         *)
             log_error "无法识别当前系统，未自动安装依赖。"
-            return 1
+            return 127
             ;;
     esac
+    return "${install_rc}"
 }
 
-# v1.0.6：默认仅检查；用户明确输入 y 时才批量安装必需依赖并二次检查。
+# v1.0.8：默认仅检查；用户明确输入 y 时才批量安装必需依赖并二次检查。
 install_dependencies() {
     log_step "检查基础依赖"
 
@@ -312,40 +368,33 @@ install_dependencies() {
         return 0
     fi
 
-    log_error "缺少必需依赖，无法继续安装 SS2022。"
-    log_error "缺失项："
-    local item
-    for item in ${missing}; do
-        log_error "  - ${item}"
-    done
+    _print_dependency_failure_block "${missing}"
 
     local ans
     read -r -p "是否现在尝试自动安装缺失依赖？[y/N]: " ans
     if [[ "${ans}" =~ ^[Yy]$ ]]; then
-        if ! _auto_install_required_deps; then
-            echo
-            _print_auto_install_failed_hint
-            return 1
+        local install_rc=0
+        _auto_install_required_deps || install_rc=$?
+
+        if [[ ${install_rc} -eq 124 ]]; then
+            log_warn "包管理器执行超时，正在重新检查依赖是否已经可用..."
+        elif [[ ${install_rc} -ne 0 ]]; then
+            log_warn "包管理器返回非 0，正在重新检查依赖是否已经可用..."
         fi
 
         missing="$(_required_cmds_missing)"
         if [[ -z "${missing}" ]]; then
+            if [[ ${install_rc} -ne 0 ]]; then
+                log_warn "包管理器返回非 0，但必需命令已可用，继续安装。"
+            fi
             log_ok "必需依赖已满足"
             return 0
         fi
 
-        log_error "必需依赖仍然缺失，无法继续安装 SS2022。"
-        log_error "缺失项："
-        for item in ${missing}; do
-            log_error "  - ${item}"
-        done
-        echo
-        _print_manual_install_hint
+        _print_auto_install_failed_block "${missing}"
         return 1
     fi
 
-    echo
-    _print_manual_install_hint
     return 1
 }
 

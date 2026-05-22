@@ -43,29 +43,30 @@
 
 ---
 
-## 2.5 依赖检查（v1.0.6：默认不自动安装，可手动确认）
+## 2.5 依赖检查（v1.0.8：默认不自动安装，可手动确认）
 
 - ☐ 必需命令齐全时：依赖阶段只打印 `>>> 检查基础依赖` + `[成功] 必需依赖已满足`，零等待，立即进入加密方式选择
-- ☐ **(v1.0.6 关键)** 必需依赖缺失（如未安装 `jq` / `xz` / `dig` 任一）时：
+- ☐ **(v1.0.8 关键)** 必需依赖缺失（如未安装 `jq` / `xz` / `dig` 任一）时：
   - ☐ `[错误] 缺少必需依赖，无法继续安装 SS2022。`
-  - ☐ `[错误] 缺失项：` 后逐行列出 `  - jq` / `  - xz/xzcat` / `  - dig/nslookup` 等可读标签
+  - ☐ 块状输出 `缺失项：`，逐行列出 `  - jq` / `  - xz/xzcat` / `  - dig/nslookup` 等可读标签，块内不重复 `[错误]`
   - ☐ 出现 `是否现在尝试自动安装缺失依赖？[y/N]:`
-  - ☐ 直接回车默认不自动安装，并显示当前系统对应的一行 `推荐修复命令`
-  - ☐ 输入 `n` / `N` 不自动安装，并显示当前系统对应的一行 `推荐修复命令`
-  - ☐ Debian/Ubuntu 只显示 `apt-get update && apt-get install -y ca-certificates curl jq xz-utils iproute2 dnsutils`
-  - ☐ CentOS/RHEL 只显示 `dnf makecache && dnf install -y ca-certificates curl jq xz iproute bind-utils`
+  - ☐ 直接回车默认不自动安装，并显示当前系统对应的块状 `推荐修复命令`
+  - ☐ 输入 `n` / `N` 不自动安装，并显示当前系统对应的块状 `推荐修复命令`
+  - ☐ Debian/Ubuntu 只显示 apt 修复命令
+  - ☐ CentOS/RHEL 只显示 dnf / yum 修复命令
   - ☐ 系统未知时才同时显示 Debian/Ubuntu 与 CentOS/RHEL 两套命令
   - ☐ 回车 / `n` 后**绝不**进入 "请选择 SS2022 加密方式"；主流程立即终止并返回菜单
-- ☐ **(v1.0.6 自动安装)** 输入 `y` / `Y` 后才尝试自动安装：
+- ☐ **(v1.0.8 自动安装)** 输入 `y` / `Y` 后才尝试自动安装：
   - ☐ Debian/Ubuntu 路径为 `timeout 60s apt-get update` + `timeout 120s apt-get install -y ca-certificates curl jq xz-utils iproute2 dnsutils`
-  - ☐ CentOS/RHEL 路径为 `timeout 60s dnf makecache` + `timeout 120s dnf install -y ca-certificates curl jq xz iproute bind-utils`
+  - ☐ CentOS/RHEL 路径为 `timeout 60s dnf/yum makecache` + `timeout 120s dnf/yum install -y ca-certificates curl jq xz iproute bind-utils`
   - ☐ 没有 `timeout` 命令时提示 `当前系统没有 timeout 命令，安装过程可能受软件源速度影响。`
   - ☐ 自动安装只批量安装必需依赖，不安装 `qrencode` / `chrony`
-  - ☐ 自动安装后重新执行 `_required_cmds_missing`；齐全时输出 `[成功] 必需依赖已满足` 并继续安装
-  - ☐ 自动安装失败 / 超时时输出短原因列表和当前系统对应的一行手动命令
-  - ☐ 自动安装后仍缺依赖时输出 `[错误] 必需依赖仍然缺失，无法继续安装 SS2022。`，列出缺失项，返回菜单
+  - ☐ 无论包管理器返回 0、非 0 还是 timeout，自动安装后都重新执行 `_required_cmds_missing`
+  - ☐ 包管理器返回非 0 但依赖已齐全时，输出警告后继续安装
+  - ☐ timeout 124 时先提示正在重新检查依赖是否已经可用，再按二次检查结果决定是否停止
+  - ☐ 自动安装后仍缺依赖时输出块状 `自动安装依赖失败，仍缺少：`，列出缺失项，返回菜单
   - ☐ 自动安装失败或依赖仍缺失时**绝不**进入 "请选择 SS2022 加密方式"
-- ☐ **(v1.0.6)** `install.sh` 仍保持最小 bootstrap：curl / ca-certificates、下载主脚本、`bash -n` 校验、创建 `ss2022` 快捷命令、打开主菜单；不安装 jq / xz / iproute / dnsutils / bind-utils
+- ☐ **(v1.0.8)** `install.sh` 仍保持最小 bootstrap：curl / ca-certificates、下载主脚本、`bash -n` 校验、创建 `ss2022` 快捷命令、打开主菜单；不安装 jq / xz / iproute / dnsutils / bind-utils
 - ☐ `qrencode` / `chrony` 不在 SS2022 安装流程中处理；时间同步未配置时只在「自动校准时间」中打印手动命令
 
 ## 3. 一键安装 SS2022
@@ -242,7 +243,7 @@
 
 - ☐ README 一行安装命令可被复制粘贴运行
 - ☐ README 显示当前版本号与 SCRIPT_VERSION 常量一致
-- ☐ install.sh 包含 `readonly INSTALLER_VERSION="v1.0.7"`，并与 MANAGER_VERSION / SCRIPT_VERSION 一致
+- ☐ install.sh 包含 `readonly INSTALLER_VERSION="v1.0.8"`，并与 MANAGER_VERSION / SCRIPT_VERSION 一致
 - ☐ CHANGELOG 包含从 v0.1.0 到当前版本的条目
 - ☐ TESTING.md（本文件）与实际行为一致
 
@@ -251,7 +252,7 @@
 ## 14. 反馈模板（用户报 bug 时请附）
 
 ```
-版本：v1.0.7
+版本：v1.0.8
 系统：Debian 12 / Ubuntu 22.04 / ...
 架构：x86_64 / aarch64
 

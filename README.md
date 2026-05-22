@@ -4,7 +4,7 @@ SS2022 + ShadowTLS v3 一体化管理脚本，适用于 Debian / Ubuntu / CentOS
 
 ## 当前状态
 
-- 当前版本：**v1.0.7**
+- 当前版本：**v1.0.8**
 - 状态：**稳定版**
 - 已在 Debian / Ubuntu / CentOS 9 上经过实测；仍建议先在干净 Debian / Ubuntu / CentOS 测试后再用于长期环境
 
@@ -85,8 +85,8 @@ ss2022
 ## 主菜单
 
 ```
-SS2022 + ShadowTLS 管理脚本 v1.0.7
-版本：v1.0.7   监听模式：dual   IPv4：x.x.x.x   IPv6：xxxx::xxxx
+SS2022 + ShadowTLS 管理脚本 v1.0.8
+版本：v1.0.8   监听模式：dual   IPv4：x.x.x.x   IPv6：xxxx::xxxx
 SS2022    ：已安装 / 运行中   端口：18388   模式：tcp_only
 ShadowTLS ：已启用 / 运行中   端口：8443    伪装：www.bing.com
 时间同步：已同步   快捷命令：ss2022
@@ -167,7 +167,8 @@ ShadowTLS ：已启用 / 运行中   端口：8443    伪装：www.bing.com
 - **v1.0.3**：彻底移除终端二维码渲染功能与对 `qrencode` 的依赖；安装 / 启用完成与「查看节点信息」均只输出完整文字链接 + 客户端配置模板。安装流程进一步轻量化：防火墙改为打印手动命令 + `[y/N]` 默认 No；BBR / 客户端模板大段输出 / 一键检查更新 / chrony 等可选功能全部不在安装路径中触发，仅在对应高级菜单按需调用
 - **v1.0.4**：主脚本取消自动安装系统依赖，避免软件源慢导致主流程长时间卡住。缺少必需依赖时打印按发行版分组的手动安装命令并停止当前安装流程返回菜单，不再进入加密方式选择；`install.sh` 仍保留 curl / ca-certificates 的最小 bootstrap
 - **v1.0.6**：优化缺依赖时的新手引导。缺少必需依赖时先询问是否自动安装，默认 No；只有输入 `y` 才按当前系统批量安装必需依赖，并在安装后二次检查。手动修复命令只显示当前系统对应的一行命令，自动安装失败或依赖仍缺失时不会继续进入 SS2022 安装流程
-- **v1.0.7**（当前）：同步安装器版本常量 `INSTALLER_VERSION`，统一 `MANAGER_VERSION` / `SCRIPT_VERSION` / `INSTALLER_VERSION`，避免 GitHub 文件列表和版本显示不一致
+- **v1.0.7**：同步安装器版本常量 `INSTALLER_VERSION`，统一 `MANAGER_VERSION` / `SCRIPT_VERSION` / `INSTALLER_VERSION`，避免 GitHub 文件列表和版本显示不一致
+- **v1.0.8**（当前）：修复自动安装依赖后因包管理器返回码 / timeout 误报失败的问题。自动安装后以二次依赖检查结果为准，并优化依赖失败提示排版，减少终端错位输出
 - **v1.0.x**：仅修复缺陷，不引入 breaking change
 
 ## 贡献 / 反馈
