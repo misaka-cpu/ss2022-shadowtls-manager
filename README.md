@@ -4,7 +4,7 @@ SS2022 + ShadowTLS v3 一体化管理脚本，适用于 Debian / Ubuntu / CentOS
 
 ## 当前状态
 
-- 当前版本：**v1.0.8**
+- 当前版本：**v1.0.9**
 - 状态：**稳定版**
 - 已在 Debian / Ubuntu / CentOS 9 上经过实测；仍建议先在干净 Debian / Ubuntu / CentOS 测试后再用于长期环境
 
@@ -16,7 +16,7 @@ SS2022 + ShadowTLS v3 一体化管理脚本，适用于 Debian / Ubuntu / CentOS
 4. **安装/启用完成直接显示完整文字链接**：只在终端输出推荐 ss:// / SS+ShadowTLS 合并链接，无需再去其它菜单，亦不渲染图像、不保存任何文件
 5. **支持 IPv4 / IPv6 / 双栈**：URI 自动加 `[ ]`、`[::]:port` 监听拼接精确
 6. **支持 sing-box / mihomo / Clash Meta / Shadowrocket / Surge 客户端配置输出**
-7. **支持时间同步检查和校准**：`systemd-timesyncd` 优先；缺失 NTP 服务时提示手动安装命令，chrony 默认不自动安装（避免被慢速软件源阻塞）
+7. **支持时间同步检查和校准**：按发行版自动选择 `systemd-timesyncd` / `chronyd` / `chrony`；缺失 NTP 服务时可手动确认安装 chrony，默认不安装
 8. **统一一键检查更新**：管理脚本本体 + `shadowsocks-rust` + `shadow-tls` + 快捷命令 wrapper 一表呈现，下载后 `bash -n` 校验通过才覆盖
 9. **一键完整卸载**：严格停服 + 残留进程 TERM/KILL + 端口释放检测 + 备份到 `/root/ss2022-shadowtls-backup-<日期>/`，完成后显示详细总结
 10. **安全边界**：
@@ -85,8 +85,8 @@ ss2022
 ## 主菜单
 
 ```
-SS2022 + ShadowTLS 管理脚本 v1.0.8
-版本：v1.0.8   监听模式：dual   IPv4：x.x.x.x   IPv6：xxxx::xxxx
+SS2022 + ShadowTLS 管理脚本 v1.0.9
+版本：v1.0.9   监听模式：dual   IPv4：x.x.x.x   IPv6：xxxx::xxxx
 SS2022    ：已安装 / 运行中   端口：18388   模式：tcp_only
 ShadowTLS ：已启用 / 运行中   端口：8443    伪装：www.bing.com
 时间同步：已同步   快捷命令：ss2022
@@ -168,7 +168,8 @@ ShadowTLS ：已启用 / 运行中   端口：8443    伪装：www.bing.com
 - **v1.0.4**：主脚本取消自动安装系统依赖，避免软件源慢导致主流程长时间卡住。缺少必需依赖时打印按发行版分组的手动安装命令并停止当前安装流程返回菜单，不再进入加密方式选择；`install.sh` 仍保留 curl / ca-certificates 的最小 bootstrap
 - **v1.0.6**：优化缺依赖时的新手引导。缺少必需依赖时先询问是否自动安装，默认 No；只有输入 `y` 才按当前系统批量安装必需依赖，并在安装后二次检查。手动修复命令只显示当前系统对应的一行命令，自动安装失败或依赖仍缺失时不会继续进入 SS2022 安装流程
 - **v1.0.7**：同步安装器版本常量 `INSTALLER_VERSION`，统一 `MANAGER_VERSION` / `SCRIPT_VERSION` / `INSTALLER_VERSION`，避免 GitHub 文件列表和版本显示不一致
-- **v1.0.8**（当前）：修复自动安装依赖后因包管理器返回码 / timeout 误报失败的问题。自动安装后以二次依赖检查结果为准，并优化依赖失败提示排版，减少终端错位输出
+- **v1.0.8**：修复自动安装依赖后因包管理器返回码 / timeout 误报失败的问题。自动安装后以二次依赖检查结果为准，并优化依赖失败提示排版，减少终端错位输出
+- **v1.0.9**（当前）：修复 `timedatectl` 显示 `NTP service: n/a` 时自动校准时间无效的问题。网络与时间菜单可在用户确认后安装 chrony；一键安装 SS2022 主流程仍不安装 chrony
 - **v1.0.x**：仅修复缺陷，不引入 breaking change
 
 ## 贡献 / 反馈

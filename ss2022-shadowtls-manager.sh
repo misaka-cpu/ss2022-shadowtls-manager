@@ -18,10 +18,10 @@ umask 077
 # 常量与路径定义（仅允许操作以下路径）
 # -----------------------------------------------------------------------------
 # 项目唯一版本常量；远程升级时从该常量提取版本号
-readonly MANAGER_VERSION="v1.0.8"
+readonly MANAGER_VERSION="v1.0.9"
 # 别名：兼容仍在 v0.1.5 及更早版本的客户端进行远程版本探测（它们 grep SCRIPT_VERSION）
 # 必须使用字面量字符串而非 "${MANAGER_VERSION}"，否则旧版客户端 grep + sed 提取到的是字面 ${MANAGER_VERSION}
-readonly SCRIPT_VERSION="v1.0.8"
+readonly SCRIPT_VERSION="v1.0.9"
 
 # 菜单返回码约定（v0.1.5）：
 #   - 普通返回（默认 0 / 非 10）：调用方按既有规则处理 press_any_key
@@ -2913,6 +2913,10 @@ _human_tz_offset() {
 # 输出格式："服务名=状态" 或空
 _ntp_service_state() {
     local unit candidates=(systemd-timesyncd chronyd chrony)
+    if ! command -v systemctl >/dev/null 2>&1; then
+        echo ""
+        return
+    fi
     for unit in "${candidates[@]}"; do
         if systemctl list-unit-files 2>/dev/null | grep -q "^${unit}\.service"; then
             local s
@@ -2924,26 +2928,35 @@ _ntp_service_state() {
     echo ""
 }
 
+_timedatectl_status_value() {
+    local key="$1"
+    timedatectl status 2>/dev/null \
+        | grep -Ei "^[[:space:]]*${key}:" \
+        | head -n 1 \
+        | sed -E 's/^[^:]+:[[:space:]]*//'
+}
+
 show_time_status() {
     log_step "系统时间与时区"
     echo "  本地时间  ：$(date '+%Y-%m-%d %H:%M:%S %Z')"
     echo "  UTC 时间  ：$(date -u '+%Y-%m-%d %H:%M:%S UTC')"
     echo "  时区偏移  ：$(_human_tz_offset)"
+    echo "  说明      ：本地时间与 UTC 时间不同是正常的，差值来自时区偏移。"
     echo
-    echo "  说明：本地时间和 UTC 时间按时区换算，存在时区偏移是正常现象。"
-    echo "        判断是否同步请看下方 'System clock synchronized'、'NTP service'。"
-    echo
-
     if ! command -v timedatectl >/dev/null 2>&1; then
         log_warn "timedatectl 不可用"
         return
     fi
 
-    local tz ntp synced rtc_local sync_label
+    local tz ntp synced rtc_local sync_label ntp_service svc_state
     tz="$(timedatectl show -p Timezone           --value 2>/dev/null)"
     ntp="$(timedatectl show -p NTP               --value 2>/dev/null)"
     synced="$(timedatectl show -p NTPSynchronized --value 2>/dev/null)"
     rtc_local="$(timedatectl show -p LocalRTC    --value 2>/dev/null)"
+    ntp_service="$(_timedatectl_status_value 'NTP service')"
+    if [[ -z "${synced}" ]]; then
+        synced="$(_timedatectl_status_value 'System clock synchronized')"
+    fi
     case "${synced}" in
         yes) sync_label="${C_GREEN}正常${C_RESET}" ;;
         no)  sync_label="${C_YELLOW}未同步${C_RESET}" ;;
@@ -2952,14 +2965,14 @@ show_time_status() {
     echo "  当前时区               ：${tz:-未知}"
     echo "  NTP 启用 (NTP)         ：${ntp:-未知}"
     echo "  System clock synchronized：${synced:-未知}"
+    echo "  NTP service            ：${ntp_service:-未知}"
     echo "  时间同步状态           ：${sync_label}"
     echo "  RTC in local TZ        ：${rtc_local:-未知}"
-    local svc_state
     svc_state="$(_ntp_service_state)"
     if [[ -n "${svc_state}" ]]; then
-        echo "  NTP service            ：${svc_state%%=*} (${svc_state##*=})"
+        echo "  本机可用 NTP unit      ：${svc_state%%=*} (${svc_state##*=})"
     else
-        echo "  NTP service            ：未检测到 systemd-timesyncd / chronyd"
+        echo "  本机可用 NTP unit      ：未检测到 systemd-timesyncd / chronyd / chrony"
     fi
     echo
     echo "--- timedatectl status 原始输出 ---"
@@ -2968,8 +2981,12 @@ show_time_status() {
 
 # 检测系统当前 NTP 守护进程 unit 名（按优先级首选可用者）；返回空 = 未发现
 # Debian/Ubuntu 默认优先 systemd-timesyncd；RHEL 系优先 chronyd
-_preferred_ntp_unit() {
+detect_ntp_unit() {
     local prefer_order
+    if ! command -v systemctl >/dev/null 2>&1; then
+        echo ""
+        return
+    fi
     if [[ "${OS_FAMILY}" == "rhel" ]]; then
         prefer_order=(chronyd chrony systemd-timesyncd)
     else
@@ -2985,6 +3002,109 @@ _preferred_ntp_unit() {
     echo ""
 }
 
+run_with_timeout_if_available() {
+    local secs="$1"
+    shift
+    if _have_cmd timeout; then
+        timeout "${secs}s" "$@"
+    else
+        "$@"
+    fi
+}
+
+_print_chrony_manual_commands() {
+    cat <<'EOF'
+
+建议安装 chrony：
+
+Debian/Ubuntu:
+  apt-get update
+  apt-get install -y chrony
+  systemctl enable --now chrony
+
+CentOS/RHEL:
+  dnf install -y chrony
+  systemctl enable --now chronyd
+
+EOF
+}
+
+install_chrony_interactive() {
+    log_warn "当前系统没有可用 NTP 服务。"
+    echo "timedatectl 显示 NTP service: n/a 时，仅执行 set-ntp true 通常不会生效。"
+    _print_chrony_manual_commands
+
+    local ans
+    read -r -p "是否现在尝试安装并启用 chrony？[y/N]: " ans
+    if [[ ! "${ans}" =~ ^[Yy]$ ]]; then
+        log_info "已跳过安装。请手动安装 chrony 后再执行自动校准时间。"
+        return 1
+    fi
+
+    if ! _have_cmd timeout; then
+        log_warn "当前系统没有 timeout 命令，安装过程可能受软件源速度影响。"
+    fi
+
+    local unit install_rc=0 update_rc=0 enable_rc=0
+    case "${OS_FAMILY}" in
+        debian)
+            unit="chrony"
+            if ! _have_cmd apt-get; then
+                log_error "未检测到 apt-get，无法安装 chrony。"
+                _print_chrony_manual_commands
+                return 1
+            fi
+            log_info "正在更新软件源索引（最多 60 秒）..."
+            run_with_timeout_if_available 60 apt-get update || update_rc=$?
+            if [[ ${update_rc} -ne 0 ]]; then
+                log_error "apt-get update 失败或超时，未继续安装 chrony。"
+                _print_chrony_manual_commands
+                return 1
+            fi
+            log_info "正在安装 chrony（最多 120 秒）..."
+            run_with_timeout_if_available 120 apt-get install -y chrony || install_rc=$?
+            ;;
+        rhel)
+            unit="chronyd"
+            if ! _have_cmd dnf; then
+                log_error "未检测到 dnf，无法安装 chrony。"
+                _print_chrony_manual_commands
+                return 1
+            fi
+            log_info "正在安装 chrony（最多 120 秒）..."
+            run_with_timeout_if_available 120 dnf install -y chrony || install_rc=$?
+            ;;
+        *)
+            log_error "无法识别当前系统，未自动安装 chrony。"
+            _print_chrony_manual_commands
+            return 1
+            ;;
+    esac
+
+    if [[ ${install_rc} -ne 0 ]]; then
+        log_error "chrony 安装失败或超时，不影响 SS2022 服务。"
+        _print_chrony_manual_commands
+        return 1
+    fi
+
+    log_info "正在启用 NTP 服务：${unit}"
+    systemctl enable --now "${unit}" || enable_rc=$?
+    if [[ ${enable_rc} -ne 0 ]]; then
+        log_error "启用 ${unit} 失败，不影响 SS2022 服务。"
+        _print_chrony_manual_commands
+        return 1
+    fi
+
+    timedatectl set-ntp true 2>/dev/null || log_warn "timedatectl set-ntp 失败"
+    sleep 3
+    show_time_status
+    if [[ "$(check_time_status)" == "synced" ]]; then
+        log_ok "chrony 已启用，时间已同步。"
+    else
+        log_warn "chrony 已启用，但首次同步可能需要几十秒，请稍后再次查看。"
+    fi
+}
+
 sync_time_auto() {
     log_step "自动校准系统时间"
     if ! command -v timedatectl >/dev/null 2>&1; then
@@ -2993,54 +3113,32 @@ sync_time_auto() {
         return 1
     fi
 
-    # 执行前快照
-    local before_state before_ntp before_synced
+    show_time_status
+
+    local before_state
     before_state="$(check_time_status)"
-    before_ntp="$(timedatectl show -p NTP             --value 2>/dev/null)"
-    before_synced="$(timedatectl show -p NTPSynchronized --value 2>/dev/null)"
-    echo "执行前：NTP=${before_ntp:-未知} / synchronized=${before_synced:-未知} / 本地时间=$(date '+%Y-%m-%d %H:%M:%S %Z')"
 
     # 选择本机可用的 NTP 守护
     local unit
-    unit="$(_preferred_ntp_unit)"
-    if [[ -n "${unit}" ]]; then
-        log_info "使用 NTP 服务：${unit}"
-        timedatectl set-ntp true 2>/dev/null || log_warn "timedatectl set-ntp 失败"
-        if ! systemctl restart "${unit}" 2>/dev/null; then
-            log_warn "重启 ${unit} 失败"
-        fi
-        sleep 1
-    else
-        log_info "未检测到 systemd-timesyncd / chronyd / chrony 任何一个 service unit"
+    unit="$(detect_ntp_unit)"
+    if [[ -z "${unit}" ]]; then
+        install_chrony_interactive
+        return $?
     fi
 
-    # 没有可用 NTP 服务时，只提示手动安装命令，保持轻量；
-    # 本脚本任何场景都不会自动安装 chrony，避免在网络源慢时阻塞菜单。
-    case "$(check_time_status)" in
-        synced) : ;;
-        *)
-            if [[ -n "${unit}" ]]; then
-                log_warn "通过 ${unit} 后仍未确认同步，请稍后再查看 timedatectl status"
-            else
-                log_warn "未检测到 systemd-timesyncd / chronyd / chrony。"
-                log_info "如需手动启用时间同步，请执行以下命令之一："
-                log_info "  Debian/Ubuntu:"
-                log_info "    apt-get update && apt-get install -y chrony"
-                log_info "    systemctl enable --now chrony"
-                log_info "  CentOS/RHEL:"
-                log_info "    dnf install -y chrony"
-                log_info "    systemctl enable --now chronyd"
-                log_info "本脚本不会自动安装 chrony，避免在网络源慢时阻塞菜单。"
-            fi
-            ;;
-    esac
+    log_info "使用 NTP 服务：${unit}"
+    timedatectl set-ntp true 2>/dev/null || log_warn "timedatectl set-ntp 失败"
+    if ! systemctl enable --now "${unit}" 2>/dev/null; then
+        log_warn "启用 ${unit} 失败"
+    fi
+    if ! systemctl restart "${unit}" 2>/dev/null; then
+        log_warn "重启 ${unit} 失败"
+    fi
+    sleep 3
 
-    # 执行后快照
-    local after_state after_ntp after_synced
+    local after_state
     after_state="$(check_time_status)"
-    after_ntp="$(timedatectl show -p NTP             --value 2>/dev/null)"
-    after_synced="$(timedatectl show -p NTPSynchronized --value 2>/dev/null)"
-    echo "执行后：NTP=${after_ntp:-未知} / synchronized=${after_synced:-未知} / 本地时间=$(date '+%Y-%m-%d %H:%M:%S %Z')"
+    show_time_status
 
     if [[ "${before_state}" == "synced" && "${after_state}" == "synced" ]]; then
         log_ok "系统时间本来已经同步，本地时间显示可能不会明显变化。"
@@ -3049,7 +3147,7 @@ sync_time_auto() {
     fi
     case "${after_state}" in
         synced)   log_ok "时间已同步" ;;
-        *)        log_warn "时间仍未同步，请稍后再查看 timedatectl status" ;;
+        *)        log_warn "NTP 服务已启用，但尚未完成同步，请稍后再次查看状态。" ;;
     esac
 }
 
