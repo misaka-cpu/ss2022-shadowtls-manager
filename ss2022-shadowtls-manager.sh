@@ -18,10 +18,10 @@ umask 077
 # 常量与路径定义（仅允许操作以下路径）
 # -----------------------------------------------------------------------------
 # 项目唯一版本常量；远程升级时从该常量提取版本号
-readonly MANAGER_VERSION="v1.0.10"
+readonly MANAGER_VERSION="v1.0.11"
 # 别名：兼容仍在 v0.1.5 及更早版本的客户端进行远程版本探测（它们 grep SCRIPT_VERSION）
 # 必须使用字面量字符串而非 "${MANAGER_VERSION}"，否则旧版客户端 grep + sed 提取到的是字面 ${MANAGER_VERSION}
-readonly SCRIPT_VERSION="v1.0.10"
+readonly SCRIPT_VERSION="v1.0.11"
 
 # 菜单返回码约定（v0.1.5）：
 #   - 普通返回（默认 0 / 非 10）：调用方按既有规则处理 press_any_key
@@ -2911,16 +2911,41 @@ _human_tz_offset() {
 
 # NTP 守护服务的运行状态（按发行版差异自动选择 systemd-timesyncd / chronyd / chrony）
 # 输出格式："服务名=状态" 或空
-_ntp_unit_exists() {
-    local unit="$1"
+_ntp_service_unit() {
+    local unit="${1%.service}"
     [[ -z "${unit}" ]] && return 1
-    systemctl list-unit-files 2>/dev/null | grep -Eq "^${unit}\.service([[:space:]]|$)" && return 0
-    systemctl cat "${unit}.service" >/dev/null 2>&1 && return 0
+    printf '%s.service' "${unit}"
+}
+
+_ntp_unit_exists() {
+    local unit svc
+    unit="${1%.service}"
+    [[ -z "${unit}" ]] && return 1
+    svc="$(_ntp_service_unit "${unit}")"
+    systemctl list-unit-files 2>/dev/null | grep -Eq "^${svc}([[:space:]]|$)" && return 0
+    systemctl cat "${svc}" >/dev/null 2>&1 && return 0
     return 1
 }
 
+_ntp_unit_active() {
+    local svc
+    svc="$(_ntp_service_unit "$1")" || return 1
+    systemctl is-active --quiet "${svc}" 2>/dev/null
+}
+
+_ntp_service_state_label() {
+    case "$1" in
+        active)       printf '运行中' ;;
+        inactive)     printf '未运行' ;;
+        activating)   printf '启动中' ;;
+        deactivating) printf '停止中' ;;
+        failed)       printf '失败' ;;
+        *)            printf '%s' "${1:-未知}" ;;
+    esac
+}
+
 _ntp_service_state() {
-    local unit candidates=(systemd-timesyncd chronyd chrony)
+    local unit svc candidates=(systemd-timesyncd chronyd chrony)
     if ! command -v systemctl >/dev/null 2>&1; then
         echo ""
         return
@@ -2928,8 +2953,9 @@ _ntp_service_state() {
     for unit in "${candidates[@]}"; do
         if _ntp_unit_exists "${unit}"; then
             local s
-            s="$(systemctl is-active "${unit}" 2>/dev/null || echo unknown)"
-            printf '%s=%s' "${unit}" "${s}"
+            svc="$(_ntp_service_unit "${unit}")"
+            s="$(systemctl is-active "${svc}" 2>/dev/null || echo unknown)"
+            printf '%s=%s' "${svc}" "${s}"
             return 0
         fi
     done
@@ -2956,7 +2982,8 @@ show_time_status() {
         return
     fi
 
-    local tz ntp synced rtc_local sync_label ntp_service svc_state
+    local tz ntp synced rtc_local ntp_service svc_state
+    local ntp_feature sync_result svc_unit svc_status svc_status_label
     tz="$(timedatectl show -p Timezone           --value 2>/dev/null)"
     ntp="$(timedatectl show -p NTP               --value 2>/dev/null)"
     synced="$(timedatectl show -p NTPSynchronized --value 2>/dev/null)"
@@ -2965,22 +2992,40 @@ show_time_status() {
     if [[ -z "${synced}" ]]; then
         synced="$(_timedatectl_status_value 'System clock synchronized')"
     fi
+    case "${ntp_service}" in
+        active) ntp_feature="${C_GREEN}已启用${C_RESET}" ;;
+        n/a|"") ntp_feature="${C_YELLOW}未检测${C_RESET}" ;;
+        *)      ntp_feature="${ntp_service}" ;;
+    esac
+    case "${ntp}" in
+        yes) [[ "${ntp_service}" != "active" ]] && ntp_feature="${C_GREEN}已启用${C_RESET}" ;;
+        no)  [[ "${ntp_service}" != "active" ]] && ntp_feature="${C_YELLOW}未启用${C_RESET}" ;;
+    esac
     case "${synced}" in
-        yes) sync_label="${C_GREEN}正常${C_RESET}" ;;
-        no)  sync_label="${C_YELLOW}未同步${C_RESET}" ;;
-        *)   sync_label="${C_YELLOW}未检测${C_RESET}" ;;
+        yes) sync_result="${C_GREEN}已同步${C_RESET}" ;;
+        no)  sync_result="${C_YELLOW}尚未同步完成${C_RESET}" ;;
+        *)   sync_result="${C_YELLOW}未检测${C_RESET}" ;;
     esac
     echo "  当前时区               ：${tz:-未知}"
     echo "  NTP 启用 (NTP)         ：${ntp:-未知}"
     echo "  System clock synchronized：${synced:-未知}"
     echo "  NTP service            ：${ntp_service:-未知}"
-    echo "  时间同步状态           ：${sync_label}"
     echo "  RTC in local TZ        ：${rtc_local:-未知}"
     svc_state="$(_ntp_service_state)"
+    echo "  时间同步状态："
+    echo "    NTP 功能：${ntp_feature}"
     if [[ -n "${svc_state}" ]]; then
-        echo "  本机可用 NTP unit      ：${svc_state%%=*} (${svc_state##*=})"
+        svc_unit="${svc_state%%=*}"
+        svc_status="${svc_state##*=}"
+        svc_status_label="$(_ntp_service_state_label "${svc_status}")"
+        echo "    NTP 服务：${svc_unit}（${svc_status_label}）"
     else
-        echo "  本机可用 NTP unit      ：未检测到 systemd-timesyncd / chronyd / chrony"
+        echo "    NTP 服务：未检测到 systemd-timesyncd.service / chronyd.service / chrony.service"
+        svc_status=""
+    fi
+    echo "    同步结果：${sync_result}"
+    if [[ "${ntp_service}" == "active" && "${synced}" == "no" && "${svc_status}" == "active" ]]; then
+        echo "  说明：NTP 功能已启用且 NTP unit 正在运行，首次同步可能需要一段时间。"
     fi
     echo
     echo "--- timedatectl status 原始输出 ---"
@@ -3003,11 +3048,67 @@ detect_ntp_unit() {
     local unit
     for unit in "${prefer_order[@]}"; do
         if _ntp_unit_exists "${unit}"; then
-            echo "${unit}"
+            _ntp_service_unit "${unit}"
             return 0
         fi
     done
     echo ""
+}
+
+enable_ntp_unit() {
+    local unit svc enable_rc=0
+    unit="$1"
+    svc="$(_ntp_service_unit "${unit}")" || return 1
+    log_info "正在启用 NTP 服务：${svc}"
+    timedatectl set-ntp true 2>/dev/null || log_warn "timedatectl set-ntp 失败"
+    systemctl enable --now "${svc}" 2>/dev/null || enable_rc=$?
+    if [[ ${enable_rc} -ne 0 ]]; then
+        if _ntp_unit_active "${svc}"; then
+            log_info "NTP 服务已在运行：${svc}"
+            return 0
+        fi
+        log_warn "启用 ${svc} 失败，请手动检查："
+        echo "  systemctl status ${svc} --no-pager"
+        return 1
+    fi
+    if _ntp_unit_active "${svc}"; then
+        log_info "NTP 服务已在运行：${svc}"
+        return 0
+    fi
+    log_warn "启用 ${svc} 后服务仍未运行，请手动检查："
+    echo "  systemctl status ${svc} --no-pager"
+    return 1
+}
+
+try_chrony_makestep() {
+    local unit="${1%.service}"
+    case "${unit}" in
+        chrony|chronyd)
+            if _have_cmd chronyc; then
+                if chronyc makestep >/dev/null 2>&1; then
+                    log_info "已尝试 chronyc makestep"
+                else
+                    log_warn "chronyc makestep 未成功，等待 NTP 自动同步。"
+                fi
+            fi
+            ;;
+    esac
+}
+
+wait_for_time_sync() {
+    local i synced
+    [[ "$(check_time_status)" == "synced" ]] && return 0
+    for i in 1 2 3 4 5 6; do
+        sleep 5
+        synced="$(timedatectl show -p NTPSynchronized --value 2>/dev/null)"
+        if [[ -z "${synced}" ]]; then
+            synced="$(_timedatectl_status_value 'System clock synchronized')"
+        fi
+        if [[ "${synced}" == "yes" ]]; then
+            return 0
+        fi
+    done
+    return 1
 }
 
 run_with_timeout_if_available() {
@@ -3055,7 +3156,7 @@ install_chrony_interactive() {
         log_warn "当前系统没有 timeout 命令，安装过程可能受软件源速度影响。"
     fi
 
-    local unit mgr install_rc=0 update_rc=0 enable_rc=0 restart_rc=0
+    local unit mgr install_rc=0 update_rc=0
     case "${OS_FAMILY}" in
         debian)
             if ! _have_cmd apt-get; then
@@ -3106,25 +3207,25 @@ install_chrony_interactive() {
         log_info "继续尝试启用时间同步服务。"
     fi
 
-    log_info "正在启用 NTP 服务：${unit}"
-    timedatectl set-ntp true 2>/dev/null || log_warn "timedatectl set-ntp 失败"
-    systemctl enable --now "${unit}" || enable_rc=$?
-    if [[ ${enable_rc} -ne 0 ]]; then
-        log_error "启用 ${unit} 失败，不影响 SS2022 服务。"
+    if ! enable_ntp_unit "${unit}"; then
+        show_time_status
         return 1
     fi
-    systemctl try-restart "${unit}" 2>/dev/null || restart_rc=$?
-    if [[ ${restart_rc} -ne 0 ]]; then
-        log_warn "try-restart ${unit} 失败，请稍后查看服务状态。"
-    fi
 
-    sleep 3
+    try_chrony_makestep "${unit}"
+    if wait_for_time_sync; then
+        show_time_status
+        log_ok "系统时间已同步。"
+        return 0
+    fi
     show_time_status
-    if [[ "$(check_time_status)" == "synced" ]]; then
-        log_ok "chrony 已启用，时间已同步。"
+    if _ntp_unit_active "${unit}"; then
+        log_warn "NTP 服务已启用，但系统尚未完成同步。"
+        log_info "首次同步可能需要几十秒，请稍后再次查看状态。"
     else
-        log_warn "NTP 服务已启用，但首次同步可能需要几十秒。"
-        log_warn "请稍后再次查看时间状态。"
+        log_warn "NTP 服务未运行，请手动检查："
+        echo "  systemctl status ${unit} --no-pager"
+        return 1
     fi
 }
 
@@ -3150,17 +3251,18 @@ sync_time_auto() {
     fi
 
     log_info "使用 NTP 服务：${unit}"
-    timedatectl set-ntp true 2>/dev/null || log_warn "timedatectl set-ntp 失败"
-    if ! systemctl enable --now "${unit}" 2>/dev/null; then
-        log_warn "启用 ${unit} 失败"
+    if ! enable_ntp_unit "${unit}"; then
+        show_time_status
+        return 1
     fi
-    if ! systemctl restart "${unit}" 2>/dev/null; then
-        log_warn "重启 ${unit} 失败"
-    fi
-    sleep 3
+    try_chrony_makestep "${unit}"
 
     local after_state
-    after_state="$(check_time_status)"
+    if wait_for_time_sync; then
+        after_state="synced"
+    else
+        after_state="$(check_time_status)"
+    fi
     show_time_status
 
     if [[ "${before_state}" == "synced" && "${after_state}" == "synced" ]]; then
@@ -3169,8 +3271,17 @@ sync_time_auto() {
         return 0
     fi
     case "${after_state}" in
-        synced)   log_ok "时间已同步" ;;
-        *)        log_warn "NTP 服务已启用，但尚未完成同步，请稍后再次查看状态。" ;;
+        synced) log_ok "系统时间已同步。" ;;
+        *)
+            if _ntp_unit_active "${unit}"; then
+                log_warn "NTP 服务已启用，但系统尚未完成同步。"
+                log_info "首次同步可能需要几十秒，请稍后再次查看状态。"
+            else
+                log_warn "NTP 服务未运行，请手动检查："
+                echo "  systemctl status ${unit} --no-pager"
+                return 1
+            fi
+            ;;
     esac
 }
 

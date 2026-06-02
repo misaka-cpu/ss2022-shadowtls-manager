@@ -4,7 +4,7 @@ SS2022 + ShadowTLS v3 一体化管理脚本，适用于 Debian / Ubuntu / CentOS
 
 ## 当前状态
 
-- 当前版本：**v1.0.10**
+- 当前版本：**v1.0.11**
 - 状态：**稳定版**
 - 已在 Debian / Ubuntu / CentOS 9 上经过实测；仍建议先在干净 Debian / Ubuntu / CentOS 测试后再用于长期环境
 
@@ -85,8 +85,8 @@ ss2022
 ## 主菜单
 
 ```
-SS2022 + ShadowTLS 管理脚本 v1.0.10
-版本：v1.0.10   监听模式：dual   IPv4：x.x.x.x   IPv6：xxxx::xxxx
+SS2022 + ShadowTLS 管理脚本 v1.0.11
+版本：v1.0.11   监听模式：dual   IPv4：x.x.x.x   IPv6：xxxx::xxxx
 SS2022    ：已安装 / 运行中   端口：18388   模式：tcp_only
 ShadowTLS ：已启用 / 运行中   端口：8443    伪装：www.bing.com
 时间同步：已同步   快捷命令：ss2022
@@ -170,7 +170,8 @@ ShadowTLS ：已启用 / 运行中   端口：8443    伪装：www.bing.com
 - **v1.0.7**：同步安装器版本常量 `INSTALLER_VERSION`，统一 `MANAGER_VERSION` / `SCRIPT_VERSION` / `INSTALLER_VERSION`，避免 GitHub 文件列表和版本显示不一致
 - **v1.0.8**：修复自动安装依赖后因包管理器返回码 / timeout 误报失败的问题。自动安装后以二次依赖检查结果为准，并优化依赖失败提示排版，减少终端错位输出
 - **v1.0.9**：修复 `timedatectl` 显示 `NTP service: n/a` 时自动校准时间无效的问题。网络与时间菜单可在用户确认后安装 chrony；一键安装 SS2022 主流程仍不安装 chrony
-- **v1.0.10**（当前）：修复 chrony 安装后因包管理器返回码 / timeout 误报失败的问题；安装后以 `detect_ntp_unit` 二次检测为准；修复 Debian/Ubuntu `chrony.service` 识别；优化 NTP 手动安装提示排版
+- **v1.0.10**：修复 chrony 安装后因包管理器返回码 / timeout 误报失败的问题；安装后以 `detect_ntp_unit` 二次检测为准；修复 Debian/Ubuntu `chrony.service` 识别；优化 NTP 手动安装提示排版
+- **v1.0.11**（当前）：修复 NTP unit 已 active 时仍误报启用失败的问题；自动校准时间后最多等待 30 秒同步；chrony/chronyd 已运行但尚未同步时提示等待而非失败；优化 `timedatectl` synchronized=no 的说明
 - **v1.0.x**：仅修复缺陷，不引入 breaking change
 
 ## 贡献 / 反馈

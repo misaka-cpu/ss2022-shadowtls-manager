@@ -8,6 +8,16 @@
 
 （暂无）
 
+## [v1.0.11] — 修复 NTP active 状态误报启用失败
+
+### Fixed
+- 修复 NTP 服务已 active 时仍误报启用失败的问题。
+- chrony / chronyd 已运行但尚未同步时改为提示等待，而不是失败。
+- 优化 `timedatectl` synchronized=no 的说明。
+
+### Changed
+- 自动校准时间后增加最多 30 秒同步等待。
+
 ## [v1.0.10] — 修复 chrony 安装后误报失败
 
 ### Fixed
