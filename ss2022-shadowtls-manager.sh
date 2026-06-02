@@ -18,10 +18,10 @@ umask 077
 # 常量与路径定义（仅允许操作以下路径）
 # -----------------------------------------------------------------------------
 # 项目唯一版本常量；远程升级时从该常量提取版本号
-readonly MANAGER_VERSION="v1.0.14"
+readonly MANAGER_VERSION="v1.0.15"
 # 别名：兼容仍在 v0.1.5 及更早版本的客户端进行远程版本探测（它们 grep SCRIPT_VERSION）
 # 必须使用字面量字符串而非 "${MANAGER_VERSION}"，否则旧版客户端 grep + sed 提取到的是字面 ${MANAGER_VERSION}
-readonly SCRIPT_VERSION="v1.0.14"
+readonly SCRIPT_VERSION="v1.0.15"
 
 # 菜单返回码约定（v0.1.5）：
 #   - 普通返回（默认 0 / 非 10）：调用方按既有规则处理 press_any_key
@@ -2991,64 +2991,91 @@ _timedatectl_status_value() {
 
 show_time_status() {
     log_step "系统时间与时区"
-    echo "  本地时间  ：$(date '+%Y-%m-%d %H:%M:%S %Z')"
-    echo "  UTC 时间  ：$(date -u '+%Y-%m-%d %H:%M:%S UTC')"
-    echo "  时区偏移  ：$(_human_tz_offset)"
-    echo "  说明      ：本地时间与 UTC 时间不同是正常的，差值来自时区偏移。"
-    echo
+
+    local local_time utc_time tz offset
+    local ntp synced ntp_service svc_state svc_unit svc_status svc_status_label
+    local ntp_feature sync_result service_line note
+    local_time="$(date '+%Y-%m-%d %H:%M:%S %Z')"
+    utc_time="$(date -u '+%Y-%m-%d %H:%M:%S UTC')"
+    offset="$(_human_tz_offset)"
+
     if ! command -v timedatectl >/dev/null 2>&1; then
-        log_warn "timedatectl 不可用"
+        cat <<EOF
+本地时间      : ${local_time}
+UTC 时间      : ${utc_time}
+当前时区      : 未检测
+时区偏移      : ${offset:-未知}
+
+NTP 功能      : 未检测
+NTP 服务      : 未检测到
+同步结果      : 未检测
+
+说明：
+timedatectl 不可用，无法读取 systemd 时间同步状态。
+本地时间与 UTC 时间不同是正常现象，差值来自时区偏移。
+
+EOF
         return
     fi
 
-    local tz ntp synced rtc_local ntp_service svc_state
-    local ntp_feature sync_result svc_unit svc_status svc_status_label
     tz="$(timedatectl show -p Timezone           --value 2>/dev/null)"
     ntp="$(timedatectl show -p NTP               --value 2>/dev/null)"
     synced="$(timedatectl show -p NTPSynchronized --value 2>/dev/null)"
-    rtc_local="$(timedatectl show -p LocalRTC    --value 2>/dev/null)"
     ntp_service="$(_timedatectl_status_value 'NTP service')"
     if [[ -z "${synced}" ]]; then
         synced="$(_timedatectl_status_value 'System clock synchronized')"
     fi
-    case "${ntp_service}" in
-        active) ntp_feature="${C_GREEN}已启用${C_RESET}" ;;
-        n/a|"") ntp_feature="${C_YELLOW}未检测${C_RESET}" ;;
-        *)      ntp_feature="${ntp_service}" ;;
-    esac
-    case "${ntp}" in
-        yes) [[ "${ntp_service}" != "active" ]] && ntp_feature="${C_GREEN}已启用${C_RESET}" ;;
-        no)  [[ "${ntp_service}" != "active" ]] && ntp_feature="${C_YELLOW}未启用${C_RESET}" ;;
-    esac
-    case "${synced}" in
-        yes) sync_result="${C_GREEN}已同步${C_RESET}" ;;
-        no)  sync_result="${C_YELLOW}尚未同步完成${C_RESET}" ;;
-        *)   sync_result="${C_YELLOW}未检测${C_RESET}" ;;
-    esac
-    echo "  当前时区               ：${tz:-未知}"
-    echo "  NTP 启用 (NTP)         ：${ntp:-未知}"
-    echo "  System clock synchronized：${synced:-未知}"
-    echo "  NTP service            ：${ntp_service:-未知}"
-    echo "  RTC in local TZ        ：${rtc_local:-未知}"
     svc_state="$(_ntp_service_state)"
-    echo "  时间同步状态："
-    echo "    NTP 功能：${ntp_feature}"
+    service_line="未检测到"
+    svc_status=""
     if [[ -n "${svc_state}" ]]; then
         svc_unit="${svc_state%%=*}"
         svc_status="${svc_state##*=}"
         svc_status_label="$(_ntp_service_state_label "${svc_status}")"
-        echo "    NTP 服务：${svc_unit}（${svc_status_label}）"
-    else
-        echo "    NTP 服务：未检测到 systemd-timesyncd.service / chronyd.service / chrony.service"
-        svc_status=""
+        service_line="${svc_unit}（${svc_status_label}）"
     fi
-    echo "    同步结果：${sync_result}"
-    if [[ "${ntp_service}" == "active" && "${synced}" == "no" && "${svc_status}" == "active" ]]; then
-        echo "  说明：NTP 功能已启用且 NTP unit 正在运行，首次同步可能需要一段时间。"
-    fi
-    echo
-    echo "--- timedatectl status 原始输出 ---"
-    timedatectl status 2>/dev/null || true
+
+    ntp_feature="未检测"
+    case "${ntp}" in
+        yes) ntp_feature="已启用" ;;
+        no)  ntp_feature="未启用" ;;
+    esac
+    [[ "${ntp_service}" == "active" || "${svc_status}" == "active" ]] && ntp_feature="已启用"
+
+    case "${synced}" in
+        yes)
+            sync_result="已同步"
+            note="本地时间与 UTC 时间不同是正常现象，差值来自时区偏移。"
+            ;;
+        no)
+            if [[ -z "${svc_state}" && ( "${ntp_service}" == "n/a" || -z "${ntp_service}" ) ]]; then
+                sync_result="未同步"
+                note="当前系统没有可用 NTP 服务，仅执行 timedatectl set-ntp true 通常不会生效。"
+            else
+                sync_result="尚未同步完成"
+                note="NTP 服务已运行，但首次同步可能需要几十秒。"
+            fi
+            ;;
+        *)
+            sync_result="未检测"
+            note="未能读取同步结果。可在详细诊断中查看 timedatectl / chronyc 输出。"
+            ;;
+    esac
+
+    cat <<EOF
+本地时间      : ${local_time}
+UTC 时间      : ${utc_time}
+当前时区      : ${tz:-未知}
+时区偏移      : ${offset:-未知}
+
+NTP 功能      : ${ntp_feature}
+NTP 服务      : ${service_line}
+同步结果      : ${sync_result}
+
+说明：
+${note}
+
+EOF
 }
 
 # 检测系统当前 NTP 守护进程 unit 名（按优先级首选可用者）；返回空 = 未发现
@@ -3205,28 +3232,30 @@ print_ntp_unsynced_diagnostics() {
     case "${unit}" in
         chrony|chronyd)
             if _have_cmd chronyc; then
-                log_info "chrony 只读诊断：chronyc tracking"
+                printf '\n>>> chrony 诊断\n\n'
+                printf 'chronyc tracking:\n'
                 tracking_out="$(chronyc tracking 2>&1 || true)"
                 printf '%s\n' "${tracking_out}"
-                echo
-                log_info "chrony 只读诊断：chronyc sources -v"
+                printf '\nchronyc sources -v:\n'
                 sources_out="$(chronyc sources -v 2>&1 || true)"
                 printf '%s\n' "${sources_out}"
-                echo
+                printf '\n'
                 if _chronyc_sources_has_selected "${sources_out}"; then
                     selected_line="$(_chronyc_selected_source_line "${sources_out}")"
                     selected_source="$(_chronyc_source_name_from_line "${selected_line}")"
-                    log_info "当前最佳时间源：${selected_source:-${selected_line}}"
-                    log_info "chrony 已检测到可用时间源，若 timedatectl 仍显示 synchronized=no，通常是首次同步尚未完成，请稍后再次查看。"
-                    cat <<'EOF'
+                    cat <<EOF
+当前最佳时间源：${selected_source:-${selected_line}}
+chrony 已检测到可用时间源，通常等待一段时间即可完成同步。
+
 可检查：
   chronyc tracking
   timedatectl
 
 EOF
                 elif _chronyc_sources_has_candidate "${sources_out}"; then
-                    log_info "chrony 已检测到候选时间源，但尚未选定最佳源，请稍后再次查看。"
                     cat <<'EOF'
+chrony 已检测到可用时间源，通常等待一段时间即可完成同步。
+
 可检查：
   chronyc tracking
   timedatectl
@@ -3234,23 +3263,38 @@ EOF
 EOF
                 else
                     if _chronyc_sources_empty "${sources_out}"; then
-                        log_warn "chronyc sources -v 输出为空。"
+                        cat <<'EOF'
+chronyc sources -v 输出为空。
+
+EOF
                     elif _chronyc_sources_all_unknown "${sources_out}"; then
-                        log_warn "chrony 服务已运行，但没有可用上游时间源。"
+                        cat <<'EOF'
+chrony 服务已运行，但没有可用上游时间源。
+
+EOF
                     else
-                        log_warn "chrony 服务已运行，但暂未检测到可用上游时间源。"
+                        cat <<'EOF'
+chrony 服务已运行，但暂未检测到可用上游时间源。
+
+EOF
                     fi
                     _print_chrony_basic_checks "${svc}"
                     _print_chrony_source_change_suggestions "${svc}"
                 fi
             else
-                log_warn "chronyc 命令不存在，无法输出 chrony 上游时间源诊断。"
-                _print_chrony_basic_checks "${svc}"
+                printf '\n>>> chrony 诊断\n\n'
+                cat <<EOF
+chronyc 命令不存在，无法输出 chrony 上游时间源诊断。
+
+可检查：
+  journalctl -u ${svc} -n 80 --no-pager
+
+EOF
             fi
             ;;
         systemd-timesyncd)
+            printf '\n>>> 时间同步诊断\n\n'
             cat <<'EOF'
-
 可检查：
   timedatectl timesync-status
   journalctl -u systemd-timesyncd -n 80 --no-pager
@@ -3258,6 +3302,47 @@ EOF
 EOF
             ;;
     esac
+}
+
+show_time_raw_diagnostics() {
+    log_step "详细时间诊断"
+    if command -v timedatectl >/dev/null 2>&1; then
+        printf '\ntimedatectl:\n'
+        timedatectl 2>/dev/null || true
+    else
+        printf '\ntimedatectl: 未检测到命令\n'
+    fi
+
+    if _have_cmd chronyc; then
+        printf '\nchronyc tracking:\n'
+        chronyc tracking 2>&1 || true
+        printf '\nchronyc sources -v:\n'
+        chronyc sources -v 2>&1 || true
+    else
+        printf '\nchronyc: 未检测到命令\n'
+    fi
+
+    local unit
+    unit="$(detect_ntp_unit)"
+    if [[ -n "${unit}" ]]; then
+        cat <<EOF
+
+可继续检查：
+  journalctl -u ${unit} -n 80 --no-pager
+
+EOF
+    else
+        cat <<'EOF'
+
+未检测到 NTP unit。
+
+可继续检查：
+  timedatectl
+  chronyc tracking
+  chronyc sources -v
+
+EOF
+    fi
 }
 
 run_with_timeout_if_available() {
@@ -3305,7 +3390,11 @@ install_chrony_interactive() {
         log_warn "当前系统没有 timeout 命令，安装过程可能受软件源速度影响。"
     fi
 
-    local unit mgr install_rc=0 update_rc=0
+    local unit mgr install_rc=0 update_rc=0 pkg_rc=0 chrony_log
+    chrony_log="/tmp/ss2022-chrony-install.$$.log"
+    : > "${chrony_log}" || { log_error "无法创建 chrony 安装日志：${chrony_log}"; return 1; }
+    log_info "详细日志：${chrony_log}"
+
     case "${OS_FAMILY}" in
         debian)
             if ! _have_cmd apt-get; then
@@ -3314,12 +3403,9 @@ install_chrony_interactive() {
                 return 1
             fi
             log_info "正在更新软件源索引（最多 60 秒）..."
-            run_with_timeout_if_available 60 apt-get update || update_rc=$?
-            if [[ ${update_rc} -ne 0 ]]; then
-                log_warn "apt-get update 失败或超时，继续尝试安装 chrony。"
-            fi
+            run_with_timeout_if_available 60 apt-get update >> "${chrony_log}" 2>&1 || update_rc=$?
             log_info "正在安装 chrony（最多 120 秒）..."
-            run_with_timeout_if_available 120 apt-get install -y chrony || install_rc=$?
+            run_with_timeout_if_available 120 apt-get install -y chrony >> "${chrony_log}" 2>&1 || install_rc=$?
             ;;
         rhel)
             mgr="$(_rhel_pkg_mgr_for_dependency_hint)"
@@ -3329,7 +3415,7 @@ install_chrony_interactive() {
                 return 1
             fi
             log_info "正在安装 chrony（最多 120 秒）..."
-            run_with_timeout_if_available 120 "${mgr}" install -y chrony || install_rc=$?
+            run_with_timeout_if_available 120 "${mgr}" install -y chrony >> "${chrony_log}" 2>&1 || install_rc=$?
             ;;
         *)
             log_error "无法识别当前系统，未自动安装 chrony。"
@@ -3338,22 +3424,26 @@ install_chrony_interactive() {
             ;;
     esac
 
-    if [[ ${install_rc} -eq 124 ]]; then
-        log_warn "chrony 安装命令超时，正在重新检测 NTP 服务是否已可用..."
+    if [[ ${update_rc} -eq 124 || ${install_rc} -eq 124 ]]; then
+        pkg_rc=124
     elif [[ ${install_rc} -ne 0 ]]; then
-        log_warn "chrony 安装命令返回非 0，正在重新检测 NTP 服务是否已可用..."
+        pkg_rc=${install_rc}
+    elif [[ ${update_rc} -ne 0 ]]; then
+        pkg_rc=${update_rc}
     fi
 
     unit="$(detect_ntp_unit)"
     if [[ -z "${unit}" ]]; then
         log_error "chrony 安装失败或未检测到可用 NTP 服务。"
+        log_info "安装日志最后 30 行："
+        tail -30 "${chrony_log}" 2>/dev/null || true
         _print_chrony_manual_commands
         return 1
     fi
 
-    if [[ ${install_rc} -ne 0 ]]; then
-        log_warn "包管理器返回异常，但已检测到 NTP 服务：${unit}"
-        log_info "继续尝试启用时间同步服务。"
+    if [[ ${pkg_rc} -ne 0 ]]; then
+        log_info "已检测到可用 NTP 服务：${unit}"
+        log_info "继续启用并检查时间同步状态。"
     fi
 
     if ! enable_ntp_unit "${unit}"; then
@@ -3363,14 +3453,13 @@ install_chrony_interactive() {
 
     try_chrony_makestep "${unit}"
     if wait_for_time_sync; then
-        show_time_status
         log_ok "系统时间已同步。"
         return 0
     fi
     show_time_status
     if _ntp_unit_active "${unit}"; then
         log_warn "NTP 服务已运行，但尚未完成同步。"
-        log_info "首次同步可能需要几十秒；如果持续不同步，请参考下面的排障信息。"
+        log_info "首次同步可能需要几十秒，请稍后再次查看。"
         print_ntp_unsynced_diagnostics "${unit}"
     else
         log_warn "NTP 服务未运行，请手动检查："
@@ -3413,7 +3502,6 @@ sync_time_auto() {
     else
         after_state="$(check_time_status)"
     fi
-    show_time_status
 
     if [[ "${before_state}" == "synced" && "${after_state}" == "synced" ]]; then
         log_ok "系统时间本来已经同步，本地时间显示可能不会明显变化。"
@@ -3423,9 +3511,10 @@ sync_time_auto() {
     case "${after_state}" in
         synced) log_ok "系统时间已同步。" ;;
         *)
+            show_time_status
             if _ntp_unit_active "${unit}"; then
                 log_warn "NTP 服务已运行，但尚未完成同步。"
-                log_info "首次同步可能需要几十秒；如果持续不同步，请参考下面的排障信息。"
+                log_info "首次同步可能需要几十秒，请稍后再次查看。"
                 print_ntp_unsynced_diagnostics "${unit}"
             else
                 log_warn "NTP 服务未运行，请手动检查："
@@ -4198,7 +4287,8 @@ submenu_network_time() {
   3) 设置监听模式（IPv4 / IPv6 / 双栈）
   4) 查看时间状态
   5) 自动校准时间
-  6) 设置时区
+  6) 详细时间诊断
+  7) 设置时区
   0) 返回主菜单
 EOF
         read -r -p "请输入选项: " c
@@ -4211,7 +4301,8 @@ EOF
                ;;
             4) show_time_status ;;
             5) sync_time_auto ;;
-            6) set_timezone_interactive
+            6) show_time_raw_diagnostics ;;
+            7) set_timezone_interactive
                # 用户在时区菜单按 0 / 留空 → 返回 MENU_RC_SKIP_PAUSE，跳过 press_any_key
                [[ $? -eq ${MENU_RC_SKIP_PAUSE} ]] && continue
                ;;

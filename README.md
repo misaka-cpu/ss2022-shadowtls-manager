@@ -4,7 +4,7 @@ SS2022 + ShadowTLS v3 一体化管理脚本，适用于 Debian / Ubuntu / CentOS
 
 ## 当前状态
 
-- 当前版本：**v1.0.14**
+- 当前版本：**v1.0.15**
 - 状态：**稳定版**
 - 已在 Debian / Ubuntu / CentOS 9 上经过实测；仍建议先在干净 Debian / Ubuntu / CentOS 测试后再用于长期环境
 
@@ -85,8 +85,8 @@ ss2022
 ## 主菜单
 
 ```
-SS2022 + ShadowTLS 管理脚本 v1.0.14
-版本：v1.0.14   监听模式：dual   IPv4：x.x.x.x   IPv6：xxxx::xxxx
+SS2022 + ShadowTLS 管理脚本 v1.0.15
+版本：v1.0.15   监听模式：dual   IPv4：x.x.x.x   IPv6：xxxx::xxxx
 SS2022    ：已安装 / 运行中   端口：18388   模式：tcp_only
 ShadowTLS ：已启用 / 运行中   端口：8443    伪装：www.bing.com
 时间同步：已同步   快捷命令：ss2022
@@ -174,7 +174,8 @@ ShadowTLS ：已启用 / 运行中   端口：8443    伪装：www.bing.com
 - **v1.0.11**：修复 NTP unit 已 active 时仍误报启用失败的问题；自动校准时间后最多等待 30 秒同步；chrony/chronyd 已运行但尚未同步时提示等待而非失败；优化 `timedatectl` synchronized=no 的说明
 - **v1.0.12**：自动校准时间等待后仍未同步时增加 chrony / systemd-timesyncd 排障提示；chrony/chronyd 会输出 `chronyc tracking` 与 `chronyc sources -v`，并提示上游时间源不可达的常见原因
 - **v1.0.13**：优化 chrony sources 诊断逻辑，存在 `^*` / `^+` 可用时间源时不再提示修改 `chrony.conf`；仅在无可用 NTP 源时显示更换 NTP 源建议
-- **v1.0.14**（当前）：优化自动安装依赖时的终端输出，包管理器原始输出写入临时日志；成功/失败提示改为简洁块状输出，避免 apt/dpkg 输出与菜单提示混在一起
+- **v1.0.14**：优化自动安装依赖时的终端输出，包管理器原始输出写入临时日志；成功/失败提示改为简洁块状输出，避免 apt/dpkg 输出与菜单提示混在一起
+- **v1.0.15**（当前）：修复自动校准时间输出错乱；时间状态默认改为简洁块状输出，raw `timedatectl` 仅在详细诊断中显示；chrony 安装命令超时但 NTP 服务已可用时不再误导性警告
 - **v1.0.x**：仅修复缺陷，不引入 breaking change
 
 ## 贡献 / 反馈

@@ -72,10 +72,11 @@
 - ☐ **(v1.0.14)** `install.sh` 仍保持最小 bootstrap：curl / ca-certificates、下载主脚本、`bash -n` 校验、创建 `ss2022` 快捷命令、打开主菜单；不安装 jq / xz / iproute / dnsutils / bind-utils；失败时显示 bootstrap 日志路径和最后 30 行
 - ☐ `qrencode` / `chrony` 不在 SS2022 安装流程中处理；时间同步未配置时只在「自动校准时间」中打印手动命令并询问是否安装 chrony，默认 No
 
-## 2.6 网络与时间：自动校准时间（v1.0.13）
+## 2.6 网络与时间：自动校准时间（v1.0.15）
 
 - ☐ `timedatectl status` 显示 `NTP service: n/a` 时执行「网络与时间 → 自动校准时间」
-  - 预期：先显示本地时间、UTC 时间、当前时区、时区偏移、`System clock synchronized`、`NTP service` 和时间同步状态
+  - 预期：先以简洁块状输出显示本地时间、UTC 时间、当前时区、时区偏移、NTP 功能、NTP 服务和同步结果
+  - 不预期：默认输出 `--- timedatectl status 原始输出 ---` 或 raw `timedatectl status`
   - 预期：提示当前系统没有可用 NTP 服务，并说明仅执行 `timedatectl set-ntp true` 通常不会生效
 - ☐ 出现 `是否现在尝试安装并启用 chrony？[y/N]:` 后直接回车
   - 预期：默认不安装 chrony，提示 `已跳过安装。请手动安装 chrony 后再执行自动校准时间。`
@@ -91,14 +92,14 @@
 - ☐ Debian/Ubuntu 安装 chrony 后应识别 `chrony.service`
   - 预期：`detect_ntp_unit` 能检测 `systemd-timesyncd.service` / `chronyd.service` / `chrony.service`
 - ☐ chrony 安装命令 timeout 124 后，如果 `chrony.service` 已存在
-  - 预期：先提示正在重新检测 NTP 服务，再继续尝试启用时间同步服务
-  - 不预期：误报 `chrony 安装失败或超时`
+  - 预期：显示 `已检测到可用 NTP 服务：chrony.service` 和 `继续启用并检查时间同步状态。`
+  - 不预期：输出 `chrony 安装命令超时` 或误报 `chrony 安装失败或超时`
 - ☐ chrony 安装命令返回非 0 后，如果 `chrony.service` 已存在
-  - 预期：提示 `包管理器返回异常，但已检测到 NTP 服务：chrony`，继续尝试启用时间同步服务
-  - 不预期：误报 `chrony 安装失败或超时`
+  - 预期：显示 `已检测到可用 NTP 服务：chrony.service` 和 `继续启用并检查时间同步状态。`
+  - 不预期：输出 `包管理器返回异常，但已检测到 NTP 服务` 或误报 `chrony 安装失败或超时`
 - ☐ chrony 安装成功后再次查看时间状态
-  - 预期：`System clock synchronized` 最终变为 `yes` 时显示同步成功
-  - 预期：首次同步仍为 `no` 时提示 `NTP 服务已启用，但首次同步可能需要几十秒。请稍后再次查看时间状态。`
+  - 预期：`synchronized=yes` 时只显示 `[成功] 系统时间已同步。`，不再继续提示安装超时
+  - 预期：首次同步仍为 `no` 且 unit active 时提示 `NTP 服务已运行，但尚未完成同步。` 和 `首次同步可能需要几十秒，请稍后再次查看。`
 - ☐ `NTP service: active` 但 `System clock synchronized: no`
   - 预期：不应输出 `启用 chrony 失败` / `启用 chronyd 失败` / `启用 systemd-timesyncd 失败`
   - 预期：提示 NTP 服务已启用但系统尚未完成同步
@@ -110,12 +111,13 @@
   - 预期：同步完成时提示 `系统时间已同步。`
   - 预期：仍未同步时提示首次同步可能需要几十秒，请稍后再次查看状态
 - ☐ 等待 30 秒后 chrony / chronyd 仍未同步，且 `chronyc` 存在
-  - 预期：输出 `chronyc tracking` 和 `chronyc sources -v` 只读诊断结果
+  - 预期：主状态后单独显示 `>>> chrony 诊断`
+  - 预期：输出 `chronyc tracking` 和 `chronyc sources -v` 只读诊断结果，原始输出每行不加 `[信息]`
   - 预期：如果 `chronyc sources -v` 疑似全是 `^?`，提示没有可用上游时间源以及 DNS、UDP/123、IPv6 路由、机房网络或 NTP 源不可达等可能原因
   - 预期：输出 chrony 配置和检查命令建议，但不把 `synchronized=no` 当作失败
 - ☐ `chronyc sources -v` 存在 `^*`
   - 预期：提示 `当前最佳时间源：<源名>`
-  - 预期：提示 chrony 已检测到可用时间源，若仍 `synchronized=no` 通常是首次同步尚未完成
+  - 预期：提示 chrony 已检测到可用时间源，通常等待一段时间即可完成同步
   - 不预期：提示修改 `/etc/chrony/chrony.conf`
 - ☐ `chronyc sources -v` 存在 `^+` 但没有 `^*`
   - 预期：提示已检测到候选时间源但尚未选定最佳源
@@ -130,6 +132,9 @@
   - 预期：只在此时提示 `chrony 安装失败或未检测到可用 NTP 服务。`
   - 预期：手动安装提示为块状输出，不按每行重复 `[错误]` / `[警告]`
   - 预期：不影响 SS2022 服务状态，不重启 / 停止 SS2022
+- ☐ 自动校准时间输出不应错位
+  - 预期：时间状态、chrony 诊断、手动命令各自成块显示
+  - 不预期：raw `timedatectl` 与主状态混在一起
 
 ## 3. 一键安装 SS2022
 
@@ -202,13 +207,14 @@
   - ☐ 选 ipv4：监听 `0.0.0.0`
   - ☐ 选 ipv6 / dual 且未检测到公网 IPv6：**非阻塞**警告
   - ☐ 切换后 SS2022 / ShadowTLS（如启用）自动重启
-- ☐ 4) 查看时间状态：显示本地时间 / UTC / 时区 / NTP / synchronized / RTC / 服务状态
-- ☐ 5) 自动校准时间：执行前/后快照；若已同步 → log_ok "系统时间本来已经同步，所以时间显示可能不会明显变化"
-  - ☐ (v1.0.2) 系统已有 systemd-timesyncd / chronyd：优先使用已有服务，`set-ntp true` + 重启 unit；不安装任何新包
-  - ☐ (v1.0.2) 系统没有任何 NTP 服务（无 timesyncd / chronyd / chrony unit）：**只**打印分段手动安装命令（Debian/Ubuntu 与 CentOS/RHEL 各一段，含 `systemctl enable --now`）
-  - ☐ (v1.0.2) **不再**出现 "是否安装 chrony? [y/N]" 提示，也**不再**调用 apt/dnf 安装 chrony，菜单永远不被网络源慢阻塞
-  - ☐ (v1.0.2) 时间同步路径不影响 SS2022 主安装：即使 NTP 未配置，菜单 1 仍可正常进入
-- ☐ 6) 设置时区：
+- ☐ 4) 查看时间状态：以块状输出显示本地时间 / UTC / 时区 / NTP 功能 / NTP 服务 / 同步结果；默认不显示 raw `timedatectl`
+- ☐ 5) 自动校准时间：执行前显示简洁时间状态；若已同步 → log_ok "系统时间本来已经同步，所以时间显示可能不会明显变化"
+  - ☐ 系统已有 systemd-timesyncd / chronyd：优先使用已有服务，不安装任何新包
+  - ☐ 系统没有任何 NTP 服务（无 timesyncd / chronyd / chrony unit）：先打印分段手动安装命令，再询问是否安装 chrony，默认 No
+  - ☐ 只有用户输入 `y` / `Y` 才进入 chrony 安装流程
+  - ☐ 时间同步路径不影响 SS2022 主安装：即使 NTP 未配置，菜单 1 仍可正常进入
+- ☐ 6) 详细时间诊断：显示 raw `timedatectl`、`chronyc tracking`、`chronyc sources -v` 和 journalctl 检查命令提示
+- ☐ 7) 设置时区：
   - ☐ 选 0 → **直接返回**，不显示错误，不需要多按回车（v0.1.5 重点修复点）
   - ☐ 选 1-5 标准时区 → 显示修改前/后时区
   - ☐ 选 1 时若当前已是 Asia/Shanghai → 显示 "当前已经是该时区，无需修改"
@@ -305,7 +311,7 @@
 
 - ☐ README 一行安装命令可被复制粘贴运行
 - ☐ README 显示当前版本号与 SCRIPT_VERSION 常量一致
-- ☐ install.sh 包含 `readonly INSTALLER_VERSION="v1.0.14"`，并与 MANAGER_VERSION / SCRIPT_VERSION 一致
+- ☐ install.sh 包含 `readonly INSTALLER_VERSION="v1.0.15"`，并与 MANAGER_VERSION / SCRIPT_VERSION 一致
 - ☐ CHANGELOG 包含从 v0.1.0 到当前版本的条目
 - ☐ TESTING.md（本文件）与实际行为一致
 
@@ -314,7 +320,7 @@
 ## 14. 反馈模板（用户报 bug 时请附）
 
 ```
-版本：v1.0.14
+版本：v1.0.15
 系统：Debian 12 / Ubuntu 22.04 / ...
 架构：x86_64 / aarch64
 
