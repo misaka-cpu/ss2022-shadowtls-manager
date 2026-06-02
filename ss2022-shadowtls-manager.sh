@@ -18,10 +18,10 @@ umask 077
 # 常量与路径定义（仅允许操作以下路径）
 # -----------------------------------------------------------------------------
 # 项目唯一版本常量；远程升级时从该常量提取版本号
-readonly MANAGER_VERSION="v1.0.11"
+readonly MANAGER_VERSION="v1.0.12"
 # 别名：兼容仍在 v0.1.5 及更早版本的客户端进行远程版本探测（它们 grep SCRIPT_VERSION）
 # 必须使用字面量字符串而非 "${MANAGER_VERSION}"，否则旧版客户端 grep + sed 提取到的是字面 ${MANAGER_VERSION}
-readonly SCRIPT_VERSION="v1.0.11"
+readonly SCRIPT_VERSION="v1.0.12"
 
 # 菜单返回码约定（v0.1.5）：
 #   - 普通返回（默认 0 / 非 10）：调用方按既有规则处理 press_any_key
@@ -3111,6 +3111,65 @@ wait_for_time_sync() {
     return 1
 }
 
+_chronyc_sources_all_unknown() {
+    local sources_out="$1"
+    echo "${sources_out}" | grep -Eq '^[[:space:]]*\^\?' || return 1
+    echo "${sources_out}" | grep -Eq '^[[:space:]]*\^[*+~x-]' && return 1
+    return 0
+}
+
+print_ntp_unsynced_diagnostics() {
+    local svc unit sources_out tracking_out
+    svc="$(_ntp_service_unit "$1")" || return 0
+    unit="${svc%.service}"
+
+    case "${unit}" in
+        chrony|chronyd)
+            if _have_cmd chronyc; then
+                log_info "chrony 只读诊断：chronyc tracking"
+                tracking_out="$(chronyc tracking 2>&1 || true)"
+                printf '%s\n' "${tracking_out}"
+                echo
+                log_info "chrony 只读诊断：chronyc sources -v"
+                sources_out="$(chronyc sources -v 2>&1 || true)"
+                printf '%s\n' "${sources_out}"
+                if _chronyc_sources_all_unknown "${sources_out}"; then
+                    log_warn "chrony 服务已运行，但没有可用上游时间源。可能是 DNS、UDP/123、IPv6 路由、机房网络或 NTP 源不可达。"
+                fi
+            else
+                log_warn "chronyc 命令不存在，无法输出 chrony 上游时间源诊断。"
+            fi
+            cat <<EOF
+
+可检查：
+  chronyc sources -v
+  chronyc tracking
+  journalctl -u ${svc} -n 80 --no-pager
+
+可尝试修改 /etc/chrony/chrony.conf，加入：
+  server time.cloudflare.com iburst
+  server ntp.aliyun.com iburst
+  server pool.ntp.org iburst
+
+然后执行：
+  systemctl restart ${svc}
+  chronyc makestep
+  timedatectl
+
+EOF
+            ;;
+        systemd-timesyncd)
+            cat <<'EOF'
+
+可检查：
+  timedatectl timesync-status
+  journalctl -u systemd-timesyncd -n 80 --no-pager
+
+EOF
+            ;;
+    esac
+}
+
 run_with_timeout_if_available() {
     local secs="$1"
     shift
@@ -3220,8 +3279,9 @@ install_chrony_interactive() {
     fi
     show_time_status
     if _ntp_unit_active "${unit}"; then
-        log_warn "NTP 服务已启用，但系统尚未完成同步。"
-        log_info "首次同步可能需要几十秒，请稍后再次查看状态。"
+        log_warn "NTP 服务已运行，但尚未完成同步。"
+        log_info "首次同步可能需要几十秒；如果持续不同步，请参考下面的排障信息。"
+        print_ntp_unsynced_diagnostics "${unit}"
     else
         log_warn "NTP 服务未运行，请手动检查："
         echo "  systemctl status ${unit} --no-pager"
@@ -3274,8 +3334,9 @@ sync_time_auto() {
         synced) log_ok "系统时间已同步。" ;;
         *)
             if _ntp_unit_active "${unit}"; then
-                log_warn "NTP 服务已启用，但系统尚未完成同步。"
-                log_info "首次同步可能需要几十秒，请稍后再次查看状态。"
+                log_warn "NTP 服务已运行，但尚未完成同步。"
+                log_info "首次同步可能需要几十秒；如果持续不同步，请参考下面的排障信息。"
+                print_ntp_unsynced_diagnostics "${unit}"
             else
                 log_warn "NTP 服务未运行，请手动检查："
                 echo "  systemctl status ${unit} --no-pager"

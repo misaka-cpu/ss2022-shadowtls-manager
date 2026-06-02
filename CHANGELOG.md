@@ -8,6 +8,14 @@
 
 （暂无）
 
+## [v1.0.12] — 优化 NTP 未同步排障提示
+
+### Changed
+- 自动校准时间等待 30 秒后仍未同步时，追加更明确的排障提示。
+- chrony / chronyd 路径下输出 `chronyc tracking` 与 `chronyc sources -v` 只读诊断。
+- `chronyc sources -v` 疑似全是 `^?` 时，提示可能是 DNS、UDP/123、IPv6 路由、机房网络或 NTP 源不可达。
+- systemd-timesyncd 路径下提示 `timedatectl timesync-status` 与对应 journal 检查命令。
+
 ## [v1.0.11] — 修复 NTP active 状态误报启用失败
 
 ### Fixed
