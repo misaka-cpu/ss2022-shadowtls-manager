@@ -18,10 +18,10 @@ umask 077
 # 常量与路径定义（仅允许操作以下路径）
 # -----------------------------------------------------------------------------
 # 项目唯一版本常量；远程升级时从该常量提取版本号
-readonly MANAGER_VERSION="v1.0.9"
+readonly MANAGER_VERSION="v1.0.10"
 # 别名：兼容仍在 v0.1.5 及更早版本的客户端进行远程版本探测（它们 grep SCRIPT_VERSION）
 # 必须使用字面量字符串而非 "${MANAGER_VERSION}"，否则旧版客户端 grep + sed 提取到的是字面 ${MANAGER_VERSION}
-readonly SCRIPT_VERSION="v1.0.9"
+readonly SCRIPT_VERSION="v1.0.10"
 
 # 菜单返回码约定（v0.1.5）：
 #   - 普通返回（默认 0 / 非 10）：调用方按既有规则处理 press_any_key
@@ -2911,6 +2911,14 @@ _human_tz_offset() {
 
 # NTP 守护服务的运行状态（按发行版差异自动选择 systemd-timesyncd / chronyd / chrony）
 # 输出格式："服务名=状态" 或空
+_ntp_unit_exists() {
+    local unit="$1"
+    [[ -z "${unit}" ]] && return 1
+    systemctl list-unit-files 2>/dev/null | grep -Eq "^${unit}\.service([[:space:]]|$)" && return 0
+    systemctl cat "${unit}.service" >/dev/null 2>&1 && return 0
+    return 1
+}
+
 _ntp_service_state() {
     local unit candidates=(systemd-timesyncd chronyd chrony)
     if ! command -v systemctl >/dev/null 2>&1; then
@@ -2918,7 +2926,7 @@ _ntp_service_state() {
         return
     fi
     for unit in "${candidates[@]}"; do
-        if systemctl list-unit-files 2>/dev/null | grep -q "^${unit}\.service"; then
+        if _ntp_unit_exists "${unit}"; then
             local s
             s="$(systemctl is-active "${unit}" 2>/dev/null || echo unknown)"
             printf '%s=%s' "${unit}" "${s}"
@@ -2994,7 +3002,7 @@ detect_ntp_unit() {
     fi
     local unit
     for unit in "${prefer_order[@]}"; do
-        if systemctl list-unit-files 2>/dev/null | grep -q "^${unit}\.service"; then
+        if _ntp_unit_exists "${unit}"; then
             echo "${unit}"
             return 0
         fi
@@ -3015,7 +3023,9 @@ run_with_timeout_if_available() {
 _print_chrony_manual_commands() {
     cat <<'EOF'
 
-建议安装 chrony：
+未检测到可用 NTP 服务。
+
+可手动安装 chrony：
 
 Debian/Ubuntu:
   apt-get update
@@ -3045,10 +3055,9 @@ install_chrony_interactive() {
         log_warn "当前系统没有 timeout 命令，安装过程可能受软件源速度影响。"
     fi
 
-    local unit install_rc=0 update_rc=0 enable_rc=0
+    local unit mgr install_rc=0 update_rc=0 enable_rc=0 restart_rc=0
     case "${OS_FAMILY}" in
         debian)
-            unit="chrony"
             if ! _have_cmd apt-get; then
                 log_error "未检测到 apt-get，无法安装 chrony。"
                 _print_chrony_manual_commands
@@ -3057,22 +3066,20 @@ install_chrony_interactive() {
             log_info "正在更新软件源索引（最多 60 秒）..."
             run_with_timeout_if_available 60 apt-get update || update_rc=$?
             if [[ ${update_rc} -ne 0 ]]; then
-                log_error "apt-get update 失败或超时，未继续安装 chrony。"
-                _print_chrony_manual_commands
-                return 1
+                log_warn "apt-get update 失败或超时，继续尝试安装 chrony。"
             fi
             log_info "正在安装 chrony（最多 120 秒）..."
             run_with_timeout_if_available 120 apt-get install -y chrony || install_rc=$?
             ;;
         rhel)
-            unit="chronyd"
-            if ! _have_cmd dnf; then
-                log_error "未检测到 dnf，无法安装 chrony。"
+            mgr="$(_rhel_pkg_mgr_for_dependency_hint)"
+            if ! _have_cmd "${mgr}"; then
+                log_error "未检测到 dnf / yum，无法安装 chrony。"
                 _print_chrony_manual_commands
                 return 1
             fi
             log_info "正在安装 chrony（最多 120 秒）..."
-            run_with_timeout_if_available 120 dnf install -y chrony || install_rc=$?
+            run_with_timeout_if_available 120 "${mgr}" install -y chrony || install_rc=$?
             ;;
         *)
             log_error "无法识别当前系统，未自动安装 chrony。"
@@ -3081,27 +3088,43 @@ install_chrony_interactive() {
             ;;
     esac
 
-    if [[ ${install_rc} -ne 0 ]]; then
-        log_error "chrony 安装失败或超时，不影响 SS2022 服务。"
+    if [[ ${install_rc} -eq 124 ]]; then
+        log_warn "chrony 安装命令超时，正在重新检测 NTP 服务是否已可用..."
+    elif [[ ${install_rc} -ne 0 ]]; then
+        log_warn "chrony 安装命令返回非 0，正在重新检测 NTP 服务是否已可用..."
+    fi
+
+    unit="$(detect_ntp_unit)"
+    if [[ -z "${unit}" ]]; then
+        log_error "chrony 安装失败或未检测到可用 NTP 服务。"
         _print_chrony_manual_commands
         return 1
+    fi
+
+    if [[ ${install_rc} -ne 0 ]]; then
+        log_warn "包管理器返回异常，但已检测到 NTP 服务：${unit}"
+        log_info "继续尝试启用时间同步服务。"
     fi
 
     log_info "正在启用 NTP 服务：${unit}"
+    timedatectl set-ntp true 2>/dev/null || log_warn "timedatectl set-ntp 失败"
     systemctl enable --now "${unit}" || enable_rc=$?
     if [[ ${enable_rc} -ne 0 ]]; then
         log_error "启用 ${unit} 失败，不影响 SS2022 服务。"
-        _print_chrony_manual_commands
         return 1
     fi
+    systemctl try-restart "${unit}" 2>/dev/null || restart_rc=$?
+    if [[ ${restart_rc} -ne 0 ]]; then
+        log_warn "try-restart ${unit} 失败，请稍后查看服务状态。"
+    fi
 
-    timedatectl set-ntp true 2>/dev/null || log_warn "timedatectl set-ntp 失败"
     sleep 3
     show_time_status
     if [[ "$(check_time_status)" == "synced" ]]; then
         log_ok "chrony 已启用，时间已同步。"
     else
-        log_warn "chrony 已启用，但首次同步可能需要几十秒，请稍后再次查看。"
+        log_warn "NTP 服务已启用，但首次同步可能需要几十秒。"
+        log_warn "请稍后再次查看时间状态。"
     fi
 }
 

@@ -69,7 +69,7 @@
 - ☐ **(v1.0.8)** `install.sh` 仍保持最小 bootstrap：curl / ca-certificates、下载主脚本、`bash -n` 校验、创建 `ss2022` 快捷命令、打开主菜单；不安装 jq / xz / iproute / dnsutils / bind-utils
 - ☐ `qrencode` / `chrony` 不在 SS2022 安装流程中处理；时间同步未配置时只在「自动校准时间」中打印手动命令并询问是否安装 chrony，默认 No
 
-## 2.6 网络与时间：自动校准时间（v1.0.9）
+## 2.6 网络与时间：自动校准时间（v1.0.10）
 
 - ☐ `timedatectl status` 显示 `NTP service: n/a` 时执行「网络与时间 → 自动校准时间」
   - 预期：先显示本地时间、UTC 时间、当前时区、时区偏移、`System clock synchronized`、`NTP service` 和时间同步状态
@@ -77,17 +77,28 @@
 - ☐ 出现 `是否现在尝试安装并启用 chrony？[y/N]:` 后直接回车
   - 预期：默认不安装 chrony，提示 `已跳过安装。请手动安装 chrony 后再执行自动校准时间。`
   - 不预期：执行 `apt-get` / `dnf` / `systemctl enable --now chrony`
+- ☐ `NTP service: n/a` 时默认不安装 chrony
+  - 预期：只有用户输入 `y` / `Y` 才进入 chrony 安装流程
 - ☐ 输入 `n` / `N`
   - 预期：不安装 chrony，直接返回菜单
 - ☐ 输入 `y` / `Y` 后才尝试安装 chrony
   - 预期：Debian/Ubuntu 路径为 `timeout 60s apt-get update` + `timeout 120s apt-get install -y chrony` + `systemctl enable --now chrony`
   - 预期：CentOS/RHEL 路径为 `timeout 120s dnf install -y chrony` + `systemctl enable --now chronyd`
   - 预期：没有 `timeout` 命令时提示 `当前系统没有 timeout 命令，安装过程可能受软件源速度影响。`
+- ☐ Debian/Ubuntu 安装 chrony 后应识别 `chrony.service`
+  - 预期：`detect_ntp_unit` 能检测 `systemd-timesyncd.service` / `chronyd.service` / `chrony.service`
+- ☐ chrony 安装命令 timeout 124 后，如果 `chrony.service` 已存在
+  - 预期：先提示正在重新检测 NTP 服务，再继续尝试启用时间同步服务
+  - 不预期：误报 `chrony 安装失败或超时`
+- ☐ chrony 安装命令返回非 0 后，如果 `chrony.service` 已存在
+  - 预期：提示 `包管理器返回异常，但已检测到 NTP 服务：chrony`，继续尝试启用时间同步服务
+  - 不预期：误报 `chrony 安装失败或超时`
 - ☐ chrony 安装成功后再次查看时间状态
   - 预期：`System clock synchronized` 最终变为 `yes` 时显示同步成功
-  - 预期：首次同步仍为 `no` 时提示 `chrony 已启用，但首次同步可能需要几十秒，请稍后再次查看。`
-- ☐ chrony 安装失败或超时
-  - 预期：显示手动安装命令并返回菜单
+  - 预期：首次同步仍为 `no` 时提示 `NTP 服务已启用，但首次同步可能需要几十秒。请稍后再次查看时间状态。`
+- ☐ chrony 安装后仍检测不到可用 NTP 服务
+  - 预期：只在此时提示 `chrony 安装失败或未检测到可用 NTP 服务。`
+  - 预期：手动安装提示为块状输出，不按每行重复 `[错误]` / `[警告]`
   - 预期：不影响 SS2022 服务状态，不重启 / 停止 SS2022
 
 ## 3. 一键安装 SS2022
@@ -264,7 +275,7 @@
 
 - ☐ README 一行安装命令可被复制粘贴运行
 - ☐ README 显示当前版本号与 SCRIPT_VERSION 常量一致
-- ☐ install.sh 包含 `readonly INSTALLER_VERSION="v1.0.9"`，并与 MANAGER_VERSION / SCRIPT_VERSION 一致
+- ☐ install.sh 包含 `readonly INSTALLER_VERSION="v1.0.10"`，并与 MANAGER_VERSION / SCRIPT_VERSION 一致
 - ☐ CHANGELOG 包含从 v0.1.0 到当前版本的条目
 - ☐ TESTING.md（本文件）与实际行为一致
 
@@ -273,7 +284,7 @@
 ## 14. 反馈模板（用户报 bug 时请附）
 
 ```
-版本：v1.0.9
+版本：v1.0.10
 系统：Debian 12 / Ubuntu 22.04 / ...
 架构：x86_64 / aarch64
 

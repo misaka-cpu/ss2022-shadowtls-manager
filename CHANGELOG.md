@@ -8,6 +8,14 @@
 
 （暂无）
 
+## [v1.0.10] — 修复 chrony 安装后误报失败
+
+### Fixed
+- 修复 chrony 安装后因返回码 / timeout 误报失败的问题。
+- chrony 安装后以 `detect_ntp_unit` 二次检测为准。
+- 修复 Debian/Ubuntu `chrony.service` 识别。
+- 优化 NTP 手动安装提示排版。
+
 ## [v1.0.9] — 修复无 NTP 服务时自动校准时间无效
 
 ### Fixed
