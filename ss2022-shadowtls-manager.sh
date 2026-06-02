@@ -18,10 +18,10 @@ umask 077
 # 常量与路径定义（仅允许操作以下路径）
 # -----------------------------------------------------------------------------
 # 项目唯一版本常量；远程升级时从该常量提取版本号
-readonly MANAGER_VERSION="v1.0.12"
+readonly MANAGER_VERSION="v1.0.14"
 # 别名：兼容仍在 v0.1.5 及更早版本的客户端进行远程版本探测（它们 grep SCRIPT_VERSION）
 # 必须使用字面量字符串而非 "${MANAGER_VERSION}"，否则旧版客户端 grep + sed 提取到的是字面 ${MANAGER_VERSION}
-readonly SCRIPT_VERSION="v1.0.12"
+readonly SCRIPT_VERSION="v1.0.14"
 
 # 菜单返回码约定（v0.1.5）：
 #   - 普通返回（默认 0 / 非 10）：调用方按既有规则处理 press_any_key
@@ -290,11 +290,22 @@ EOF
 }
 
 _print_auto_install_failed_block() {
-    local missing="$1"
-    log_error "自动安装依赖失败，仍缺少："
+    local missing="$1" dep_log="$2"
+    log_error "自动安装依赖失败，仍缺少必需命令。"
     {
+        printf '缺失项：\n'
         _print_missing_items_plain "${missing}"
-        printf '\n请手动执行：\n'
+        printf '\n'
+    } >&2
+    log_info "详细日志：${dep_log}"
+    log_info "安装日志最后 30 行："
+    if [[ -f "${dep_log}" ]]; then
+        tail -30 "${dep_log}"
+    else
+        log_warn "日志文件不存在：${dep_log}"
+    fi
+    {
+        printf '\n推荐修复命令：\n'
         _print_current_manual_install_command_plain
         cat <<'EOF'
 
@@ -307,33 +318,33 @@ EOF
 
 _run_dep_cmd_with_timeout() {
     local secs="$1"
+    local dep_log="$2"
+    shift
     shift
     if _have_cmd timeout; then
-        timeout "${secs}s" "$@"
+        timeout "${secs}s" "$@" >> "${dep_log}" 2>&1
     else
-        "$@"
+        "$@" >> "${dep_log}" 2>&1
     fi
 }
 
 _auto_install_required_deps() {
+    local dep_log="$1"
     if ! _have_cmd timeout; then
         log_warn "当前系统没有 timeout 命令，安装过程可能受软件源速度影响。"
     fi
 
-    local mgr update_rc=0 install_rc=0
+    local mgr update_rc=0 install_rc=0 final_rc=0
     case "${OS_FAMILY}" in
         debian)
             if ! _have_cmd apt-get; then
                 log_error "未检测到 apt-get，无法自动安装依赖。"
                 return 127
             fi
-            log_info "正在更新软件源索引..."
-            _run_dep_cmd_with_timeout 60 apt-get update || update_rc=$?
-            if [[ ${update_rc} -ne 0 ]]; then
-                log_warn "软件源索引更新失败或超时，继续尝试安装依赖。"
-            fi
+            log_info "正在更新软件包索引..."
+            _run_dep_cmd_with_timeout 60 "${dep_log}" apt-get update || update_rc=$?
             log_info "正在安装必需依赖..."
-            _run_dep_cmd_with_timeout 120 apt-get install -y ca-certificates curl jq xz-utils iproute2 dnsutils || install_rc=$?
+            _run_dep_cmd_with_timeout 120 "${dep_log}" apt-get install -y ca-certificates curl jq xz-utils iproute2 dnsutils || install_rc=$?
             ;;
         rhel)
             mgr="$(_rhel_pkg_mgr_for_dependency_hint)"
@@ -341,20 +352,24 @@ _auto_install_required_deps() {
                 log_error "未检测到 dnf / yum，无法自动安装依赖。"
                 return 127
             fi
-            log_info "正在更新软件源索引..."
-            _run_dep_cmd_with_timeout 60 "${mgr}" makecache || update_rc=$?
-            if [[ ${update_rc} -ne 0 ]]; then
-                log_warn "软件源索引更新失败或超时，继续尝试安装依赖。"
-            fi
+            log_info "正在更新软件包索引..."
+            _run_dep_cmd_with_timeout 60 "${dep_log}" "${mgr}" makecache || update_rc=$?
             log_info "正在安装必需依赖..."
-            _run_dep_cmd_with_timeout 120 "${mgr}" install -y ca-certificates curl jq xz iproute bind-utils || install_rc=$?
+            _run_dep_cmd_with_timeout 120 "${dep_log}" "${mgr}" install -y ca-certificates curl jq xz iproute bind-utils || install_rc=$?
             ;;
         *)
             log_error "无法识别当前系统，未自动安装依赖。"
             return 127
             ;;
     esac
-    return "${install_rc}"
+    if [[ ${update_rc} -eq 124 || ${install_rc} -eq 124 ]]; then
+        final_rc=124
+    elif [[ ${install_rc} -ne 0 ]]; then
+        final_rc=${install_rc}
+    elif [[ ${update_rc} -ne 0 ]]; then
+        final_rc=${update_rc}
+    fi
+    return "${final_rc}"
 }
 
 # v1.0.8：默认仅检查；用户明确输入 y 时才批量安装必需依赖并二次检查。
@@ -373,25 +388,29 @@ install_dependencies() {
     local ans
     read -r -p "是否现在尝试自动安装缺失依赖？[y/N]: " ans
     if [[ "${ans}" =~ ^[Yy]$ ]]; then
-        local install_rc=0
-        _auto_install_required_deps || install_rc=$?
+        local install_rc=0 dep_log missing_after
+        dep_log="/tmp/ss2022-deps-install.$$.log"
+        : > "${dep_log}" || { log_error "无法创建依赖安装日志：${dep_log}"; return 1; }
+        log_info "正在自动安装必需依赖，最多等待 120 秒..."
+        log_info "详细日志：${dep_log}"
+        _auto_install_required_deps "${dep_log}" || install_rc=$?
 
         if [[ ${install_rc} -eq 124 ]]; then
             log_warn "包管理器执行超时，正在重新检查依赖是否已经可用..."
-        elif [[ ${install_rc} -ne 0 ]]; then
-            log_warn "包管理器返回非 0，正在重新检查依赖是否已经可用..."
         fi
 
-        missing="$(_required_cmds_missing)"
-        if [[ -z "${missing}" ]]; then
+        missing_after="$(_required_cmds_missing)"
+        if [[ -z "${missing_after}" ]]; then
             if [[ ${install_rc} -ne 0 ]]; then
-                log_warn "包管理器返回非 0，但必需命令已可用，继续安装。"
+                log_warn "包管理器返回异常，但必需命令已可用，继续安装。"
+                log_info "如需排查，查看日志：${dep_log}"
             fi
             log_ok "必需依赖已满足"
+            printf '\n'
             return 0
         fi
 
-        _print_auto_install_failed_block "${missing}"
+        _print_auto_install_failed_block "${missing_after}" "${dep_log}"
         return 1
     fi
 
@@ -3118,8 +3137,68 @@ _chronyc_sources_all_unknown() {
     return 0
 }
 
+_chronyc_sources_empty() {
+    local sources_out="$1"
+    ! echo "${sources_out}" | grep -q '[^[:space:]]'
+}
+
+_chronyc_sources_has_selected() {
+    local sources_out="$1"
+    echo "${sources_out}" | grep -Eq '^[[:space:]]*\^\*'
+}
+
+_chronyc_sources_has_candidate() {
+    local sources_out="$1"
+    echo "${sources_out}" | grep -Eq '^[[:space:]]*\^\+'
+}
+
+_chronyc_selected_source_line() {
+    local sources_out="$1"
+    echo "${sources_out}" | grep -E '^[[:space:]]*\^\*' | head -n 1
+}
+
+_chronyc_source_name_from_line() {
+    local line="$1"
+    echo "${line}" | sed -E 's/^[[:space:]]*\^[^[:space:]]+[[:space:]]+([^[:space:]]+).*/\1/'
+}
+
+_print_chrony_basic_checks() {
+    local svc="$1"
+    cat <<EOF
+
+可检查：
+  chronyc sources -v
+  chronyc tracking
+  journalctl -u ${svc} -n 80 --no-pager
+
+EOF
+}
+
+_print_chrony_source_change_suggestions() {
+    local svc="$1"
+    cat <<EOF
+可能原因：
+  - DNS 异常
+  - UDP/123 被阻断
+  - IPv6 路由异常
+  - 机房网络限制
+  - NTP 源不可达
+
+可尝试修改 /etc/chrony/chrony.conf，加入：
+  server time.cloudflare.com iburst
+  server ntp.aliyun.com iburst
+  server pool.ntp.org iburst
+
+然后执行：
+  systemctl restart ${svc}
+  chronyc makestep
+  timedatectl
+
+EOF
+}
+
 print_ntp_unsynced_diagnostics() {
-    local svc unit sources_out tracking_out
+    local svc unit sources_out tracking_out selected_line selected_source
     svc="$(_ntp_service_unit "$1")" || return 0
     unit="${svc%.service}"
 
@@ -3133,30 +3212,41 @@ print_ntp_unsynced_diagnostics() {
                 log_info "chrony 只读诊断：chronyc sources -v"
                 sources_out="$(chronyc sources -v 2>&1 || true)"
                 printf '%s\n' "${sources_out}"
-                if _chronyc_sources_all_unknown "${sources_out}"; then
-                    log_warn "chrony 服务已运行，但没有可用上游时间源。可能是 DNS、UDP/123、IPv6 路由、机房网络或 NTP 源不可达。"
-                fi
-            else
-                log_warn "chronyc 命令不存在，无法输出 chrony 上游时间源诊断。"
-            fi
-            cat <<EOF
-
+                echo
+                if _chronyc_sources_has_selected "${sources_out}"; then
+                    selected_line="$(_chronyc_selected_source_line "${sources_out}")"
+                    selected_source="$(_chronyc_source_name_from_line "${selected_line}")"
+                    log_info "当前最佳时间源：${selected_source:-${selected_line}}"
+                    log_info "chrony 已检测到可用时间源，若 timedatectl 仍显示 synchronized=no，通常是首次同步尚未完成，请稍后再次查看。"
+                    cat <<'EOF'
 可检查：
-  chronyc sources -v
   chronyc tracking
-  journalctl -u ${svc} -n 80 --no-pager
-
-可尝试修改 /etc/chrony/chrony.conf，加入：
-  server time.cloudflare.com iburst
-  server ntp.aliyun.com iburst
-  server pool.ntp.org iburst
-
-然后执行：
-  systemctl restart ${svc}
-  chronyc makestep
   timedatectl
 
 EOF
+                elif _chronyc_sources_has_candidate "${sources_out}"; then
+                    log_info "chrony 已检测到候选时间源，但尚未选定最佳源，请稍后再次查看。"
+                    cat <<'EOF'
+可检查：
+  chronyc tracking
+  timedatectl
+
+EOF
+                else
+                    if _chronyc_sources_empty "${sources_out}"; then
+                        log_warn "chronyc sources -v 输出为空。"
+                    elif _chronyc_sources_all_unknown "${sources_out}"; then
+                        log_warn "chrony 服务已运行，但没有可用上游时间源。"
+                    else
+                        log_warn "chrony 服务已运行，但暂未检测到可用上游时间源。"
+                    fi
+                    _print_chrony_basic_checks "${svc}"
+                    _print_chrony_source_change_suggestions "${svc}"
+                fi
+            else
+                log_warn "chronyc 命令不存在，无法输出 chrony 上游时间源诊断。"
+                _print_chrony_basic_checks "${svc}"
+            fi
             ;;
         systemd-timesyncd)
             cat <<'EOF'

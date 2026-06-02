@@ -24,12 +24,12 @@
 ## 1. 一行安装 install.sh
 
 - ☐ 非 root 直接跑 `install.sh` → 提示 "请使用 root 用户运行：sudo -i" 并退出
-- ☐ root 跑 `install.sh`，缺少 `curl` → 自动 `apt-get install -y curl ca-certificates`（v1.0.1：索引 60s 超时 / 安装 120s 超时；超时打印软件源诊断和手动命令，不再 180s 卡住）
+- ☐ root 跑 `install.sh`，缺少 `curl` → 自动 `apt-get install -y curl ca-certificates`（索引 60s 超时 / 安装 120s 超时；包管理器详细输出写入 `/tmp/ss2022-bootstrap-deps-install.$$.log`）
 - ☐ `install.sh` 下载主脚本到 `/tmp/ss2022-shadowtls-manager.sh.tmp.$$` → 跑 `bash -n` 通过 → 备份旧版本 → 安装到 `/root/ss2022-shadowtls-manager.sh` → `exec` 进入主菜单
 - ☐ 故意制造下载失败（网络阻断 / 私有仓库）：旧版本不被覆盖；提示"如果仓库为 Private，请使用 scp 或 git pull 手动同步"
 - ☐ `install.sh` 不写 `/usr/local/bin/ss2022`（快捷命令由主脚本 SS2022 安装成功后才创建）
 - ☐ `install.sh` 不安装 systemd 服务、不动 nftables、不动防火墙
-- ☐ 软件源不可用情景：手动让 apt/dnf 阻塞 → 总等待应 ≤ 60 + 120 = 180 秒，并最终给出明确 "请手动执行 apt-get install -y ca-certificates curl" 等命令
+- ☐ 软件源不可用情景：手动让 apt/dnf 阻塞 → 总等待应 ≤ 60 + 120 = 180 秒；失败时显示日志路径、最后 30 行和手动修复命令
 
 ---
 
@@ -43,7 +43,7 @@
 
 ---
 
-## 2.5 依赖检查（v1.0.8：默认不自动安装，可手动确认）
+## 2.5 依赖检查（默认不自动安装，可手动确认）
 
 - ☐ 必需命令齐全时：依赖阶段只打印 `>>> 检查基础依赖` + `[成功] 必需依赖已满足`，零等待，立即进入加密方式选择
 - ☐ **(v1.0.8 关键)** 必需依赖缺失（如未安装 `jq` / `xz` / `dig` 任一）时：
@@ -59,17 +59,20 @@
 - ☐ **(v1.0.8 自动安装)** 输入 `y` / `Y` 后才尝试自动安装：
   - ☐ Debian/Ubuntu 路径为 `timeout 60s apt-get update` + `timeout 120s apt-get install -y ca-certificates curl jq xz-utils iproute2 dnsutils`
   - ☐ CentOS/RHEL 路径为 `timeout 60s dnf/yum makecache` + `timeout 120s dnf/yum install -y ca-certificates curl jq xz iproute bind-utils`
+  - ☐ **(v1.0.14)** 缺依赖时选择 `y` 自动安装，屏幕只显示简洁状态和 `/tmp/ss2022-deps-install.$$.log` 日志路径
+  - ☐ **(v1.0.14)** apt/dpkg/dnf/yum 原始输出不应直接刷屏，必须写入依赖安装日志
   - ☐ 没有 `timeout` 命令时提示 `当前系统没有 timeout 命令，安装过程可能受软件源速度影响。`
   - ☐ 自动安装只批量安装必需依赖，不安装 `qrencode` / `chrony`
   - ☐ 无论包管理器返回 0、非 0 还是 timeout，自动安装后都重新执行 `_required_cmds_missing`
-  - ☐ 包管理器返回非 0 但依赖已齐全时，输出警告后继续安装
+  - ☐ 包管理器返回非 0 但依赖已齐全时，输出 `包管理器返回异常，但必需命令已可用，继续安装。`、日志路径和 `[成功] 必需依赖已满足`
   - ☐ timeout 124 时先提示正在重新检查依赖是否已经可用，再按二次检查结果决定是否停止
-  - ☐ 自动安装后仍缺依赖时输出块状 `自动安装依赖失败，仍缺少：`，列出缺失项，返回菜单
+  - ☐ 自动安装成功后，`请选择 SS2022 加密方式` 不应和警告行或包管理器输出混在同一行
+  - ☐ 自动安装后仍缺依赖时输出块状 `自动安装依赖失败，仍缺少必需命令。`，列出缺失项，显示日志路径和最后 30 行，返回菜单
   - ☐ 自动安装失败或依赖仍缺失时**绝不**进入 "请选择 SS2022 加密方式"
-- ☐ **(v1.0.8)** `install.sh` 仍保持最小 bootstrap：curl / ca-certificates、下载主脚本、`bash -n` 校验、创建 `ss2022` 快捷命令、打开主菜单；不安装 jq / xz / iproute / dnsutils / bind-utils
+- ☐ **(v1.0.14)** `install.sh` 仍保持最小 bootstrap：curl / ca-certificates、下载主脚本、`bash -n` 校验、创建 `ss2022` 快捷命令、打开主菜单；不安装 jq / xz / iproute / dnsutils / bind-utils；失败时显示 bootstrap 日志路径和最后 30 行
 - ☐ `qrencode` / `chrony` 不在 SS2022 安装流程中处理；时间同步未配置时只在「自动校准时间」中打印手动命令并询问是否安装 chrony，默认 No
 
-## 2.6 网络与时间：自动校准时间（v1.0.12）
+## 2.6 网络与时间：自动校准时间（v1.0.13）
 
 - ☐ `timedatectl status` 显示 `NTP service: n/a` 时执行「网络与时间 → 自动校准时间」
   - 预期：先显示本地时间、UTC 时间、当前时区、时区偏移、`System clock synchronized`、`NTP service` 和时间同步状态
@@ -110,6 +113,16 @@
   - 预期：输出 `chronyc tracking` 和 `chronyc sources -v` 只读诊断结果
   - 预期：如果 `chronyc sources -v` 疑似全是 `^?`，提示没有可用上游时间源以及 DNS、UDP/123、IPv6 路由、机房网络或 NTP 源不可达等可能原因
   - 预期：输出 chrony 配置和检查命令建议，但不把 `synchronized=no` 当作失败
+- ☐ `chronyc sources -v` 存在 `^*`
+  - 预期：提示 `当前最佳时间源：<源名>`
+  - 预期：提示 chrony 已检测到可用时间源，若仍 `synchronized=no` 通常是首次同步尚未完成
+  - 不预期：提示修改 `/etc/chrony/chrony.conf`
+- ☐ `chronyc sources -v` 存在 `^+` 但没有 `^*`
+  - 预期：提示已检测到候选时间源但尚未选定最佳源
+  - 不预期：提示修改 `/etc/chrony/chrony.conf`
+- ☐ `chronyc sources -v` 没有 `^*` / `^+` 或输出为空
+  - 预期：才显示 DNS、UDP/123、IPv6 路由、机房网络限制、NTP 源不可达等可能原因
+  - 预期：才显示更换 NTP 源与修改 `chrony.conf` 建议
 - ☐ 等待 30 秒后 systemd-timesyncd 仍未同步
   - 预期：提示 `timedatectl timesync-status`
   - 预期：提示 `journalctl -u systemd-timesyncd -n 80 --no-pager`
@@ -292,7 +305,7 @@
 
 - ☐ README 一行安装命令可被复制粘贴运行
 - ☐ README 显示当前版本号与 SCRIPT_VERSION 常量一致
-- ☐ install.sh 包含 `readonly INSTALLER_VERSION="v1.0.12"`，并与 MANAGER_VERSION / SCRIPT_VERSION 一致
+- ☐ install.sh 包含 `readonly INSTALLER_VERSION="v1.0.14"`，并与 MANAGER_VERSION / SCRIPT_VERSION 一致
 - ☐ CHANGELOG 包含从 v0.1.0 到当前版本的条目
 - ☐ TESTING.md（本文件）与实际行为一致
 
@@ -301,7 +314,7 @@
 ## 14. 反馈模板（用户报 bug 时请附）
 
 ```
-版本：v1.0.12
+版本：v1.0.14
 系统：Debian 12 / Ubuntu 22.04 / ...
 架构：x86_64 / aarch64
 

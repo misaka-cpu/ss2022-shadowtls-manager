@@ -21,7 +21,7 @@
 set -o pipefail
 umask 077
 
-readonly INSTALLER_VERSION="v1.0.12"
+readonly INSTALLER_VERSION="v1.0.14"
 readonly SCRIPT_URL="https://raw.githubusercontent.com/misaka-cpu/ss2022-shadowtls-manager/main/ss2022-shadowtls-manager.sh"
 readonly INSTALL_PATH="/root/ss2022-shadowtls-manager.sh"
 readonly SHORTCUT_PATH="/usr/local/bin/ss2022"
@@ -64,25 +64,50 @@ fi
 # -----------------------------------------------------------------------------
 print_source_hint() {
     local mgr="$1"
-    log_warn "可能原因："
-    log_warn "  1) VPS 到软件源网络慢"
-    log_warn "  2) DNS 解析慢"
-    log_warn "  3) IPv6 路由异常"
-    log_warn "  4) 镜像源不可用"
-    log_warn "  5) 系统软件源配置异常"
-    log_warn "请手动测试软件源后重试："
+    log_warn "请手动测试软件源后重试。"
     case "${mgr}" in
         dnf|yum)
-            log_warn "  CentOS/RHEL:"
-            log_warn "    ${mgr} makecache"
-            log_warn "    ${mgr} install -y ca-certificates curl"
+            cat <<EOF
+可能原因：
+  1) VPS 到软件源网络慢
+  2) DNS 解析慢
+  3) IPv6 路由异常
+  4) 镜像源不可用
+  5) 系统软件源配置异常
+
+手动修复命令：
+  ${mgr} makecache
+  ${mgr} install -y ca-certificates curl
+
+EOF
             ;;
         *)
-            log_warn "  Debian/Ubuntu:"
-            log_warn "    apt-get update"
-            log_warn "    apt-get install -y ca-certificates curl"
+            cat <<'EOF'
+可能原因：
+  1) VPS 到软件源网络慢
+  2) DNS 解析慢
+  3) IPv6 路由异常
+  4) 镜像源不可用
+  5) 系统软件源配置异常
+
+手动修复命令：
+  apt-get update
+  apt-get install -y ca-certificates curl
+
+EOF
             ;;
     esac
+}
+
+print_dep_log_tail() {
+    local dep_log="$1"
+    log_info "详细日志：${dep_log}"
+    log_info "安装日志最后 30 行："
+    if [[ -f "${dep_log}" ]]; then
+        tail -30 "${dep_log}"
+    else
+        log_warn "日志文件不存在：${dep_log}"
+    fi
 }
 
 ensure_dep_curl() {
@@ -101,33 +126,46 @@ ensure_dep_curl() {
         exit 1
     fi
 
-    log_info "包管理器：${mgr}（更新索引最多等待 60 秒，安装最多等待 120 秒）..."
-    local rc=0
+    local dep_log="/tmp/ss2022-bootstrap-deps-install.$$.log"
+    : > "${dep_log}" || { log_error "无法创建依赖安装日志：${dep_log}"; exit 1; }
+
+    log_info "正在自动安装 curl / ca-certificates，安装最多等待 120 秒..."
+    log_info "详细日志：${dep_log}"
+    local rc=0 update_rc=0
     case "${mgr}" in
         apt-get)
-            DEBIAN_FRONTEND=noninteractive run_with_timeout 60 apt-get update -y >/dev/null 2>&1 \
-                || log_warn "apt-get update 失败或超时（60s），继续尝试安装"
-            DEBIAN_FRONTEND=noninteractive run_with_timeout 120 apt-get install -y curl ca-certificates >/dev/null 2>&1 || rc=$?
+            log_info "正在更新软件包索引..."
+            DEBIAN_FRONTEND=noninteractive run_with_timeout 60 apt-get update >> "${dep_log}" 2>&1 || update_rc=$?
+            log_info "正在安装 curl / ca-certificates..."
+            DEBIAN_FRONTEND=noninteractive run_with_timeout 120 apt-get install -y curl ca-certificates >> "${dep_log}" 2>&1 || rc=$?
             ;;
         dnf)
-            run_with_timeout 60 dnf makecache -y >/dev/null 2>&1 || log_warn "dnf makecache 失败或超时（60s）"
-            run_with_timeout 120 dnf install -y curl ca-certificates >/dev/null 2>&1 || rc=$?
+            log_info "正在更新软件包索引..."
+            run_with_timeout 60 dnf makecache -y >> "${dep_log}" 2>&1 || update_rc=$?
+            log_info "正在安装 curl / ca-certificates..."
+            run_with_timeout 120 dnf install -y curl ca-certificates >> "${dep_log}" 2>&1 || rc=$?
             ;;
         yum)
-            run_with_timeout 60 yum makecache >/dev/null 2>&1 || log_warn "yum makecache 失败或超时（60s）"
-            run_with_timeout 120 yum install -y curl ca-certificates >/dev/null 2>&1 || rc=$?
+            log_info "正在更新软件包索引..."
+            run_with_timeout 60 yum makecache >> "${dep_log}" 2>&1 || update_rc=$?
+            log_info "正在安装 curl / ca-certificates..."
+            run_with_timeout 120 yum install -y curl ca-certificates >> "${dep_log}" 2>&1 || rc=$?
             ;;
     esac
 
-    if [[ ${rc} -eq 124 ]]; then
-        log_error "安装 curl / ca-certificates 超时（120s），软件源响应过慢，已放弃。"
+    if ! have_cmd curl; then
+        if [[ ${update_rc} -eq 124 || ${rc} -eq 124 ]]; then
+            log_error "安装 curl / ca-certificates 超时，软件源响应过慢，已放弃。"
+        else
+            log_error "curl 安装失败（rc=${rc}）；请手动安装 curl 与 ca-certificates 后重试"
+        fi
+        print_dep_log_tail "${dep_log}"
         print_source_hint "${mgr}"
         exit 1
     fi
-    if ! have_cmd curl; then
-        log_error "curl 安装失败（rc=${rc}）；请手动安装 curl 与 ca-certificates 后重试"
-        print_source_hint "${mgr}"
-        exit 1
+    if [[ ${update_rc} -ne 0 || ${rc} -ne 0 ]]; then
+        log_warn "包管理器返回异常，但 curl 已可用，继续安装。"
+        log_info "如需排查，查看日志：${dep_log}"
     fi
     log_ok "curl / ca-certificates 已安装"
 }
