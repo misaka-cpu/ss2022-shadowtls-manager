@@ -33,7 +33,13 @@
 - ☐ 故意制造下载失败（网络阻断 / 私有仓库）：旧版本不被覆盖；提示"如果仓库为 Private，请使用 scp 或 git pull 手动同步"
 - ☐ `install.sh` 不写 `/usr/local/bin/ss2022`（快捷命令由主脚本 SS2022 安装成功后才创建）
 - ☐ `install.sh` 不安装 systemd 服务、不动 nftables、不动防火墙
-- ☐ **(v1.0.16)** `install.sh` 不安装 `qrencode` / `chrony` / BBR / 防火墙 / nftables，不启动 `ss2022.service`，只准备脚本运行环境
+- ☐ **(v1.0.16)** `install.sh` 不安装 `qrencode` / BBR / 防火墙 / nftables，不启动 `ss2022.service`，只准备脚本运行环境
+- ☐ **(v1.0.17)** bootstrap 依赖完成后、下载主脚本前，`install.sh` 检测 NTP 服务：已有 `chrony` / `chronyd` / `systemd-timesyncd` 时打印 `[信息] 已检测到 NTP 服务：xxx，跳过 chrony 安装提示。`
+- ☐ **(v1.0.17)** `NTP service: n/a`（无任何 NTP 服务）运行 `install.sh`：打印 `[警告] 当前系统没有可用 NTP 服务。` + 时间敏感说明 + `[信息] 建议安装 chrony 作为时间同步服务。`，并询问 `是否现在安装 chrony？[Y/n]:`（默认 Yes）
+- ☐ **(v1.0.17)** 询问时直接回车或输入 `y`/`Y` → 安装 chrony，屏幕只显示 `[信息] 正在安装 chrony，详细日志：/tmp/ss2022-bootstrap-chrony-install.$$.log`；Debian/Ubuntu 走 `apt-get`、RHEL 系走 `dnf`/`yum`，并 `systemctl enable --now chrony`/`chronyd`
+- ☐ **(v1.0.17)** 询问时输入 `n`/`N` → 打印 `[信息] 已跳过 chrony 安装。稍后可在 ss2022 菜单的「网络与时间」查看手动命令。`，继续进入菜单
+- ☐ **(v1.0.17)** 安装后二次检测 NTP 服务存在 → `[成功] 已检测到 NTP 服务：xxx`，**不因 apt/dnf/systemctl 返回码异常就报失败**
+- ☐ **(v1.0.17)** chrony 安装失败（仍无 NTP 服务）→ `[警告] 未检测到可用 NTP 服务。` + `[信息] 日志最后 30 行：` + `tail -30` 日志 + 继续进入主菜单（chrony 不是主脚本运行必需依赖，不中断 `install.sh`）
 - ☐ 软件源不可用情景：手动让 apt/dnf 阻塞 → 总等待应 ≤ 60 + 120 = 180 秒；失败时显示日志路径、最后 30 行和手动修复命令
 
 ---
@@ -61,75 +67,41 @@
   - ☐ 系统未知时才同时显示 Debian/Ubuntu 与 CentOS/RHEL 两套命令
   - ☐ 末尾提示 `修复后重新运行：ss2022`
   - ☐ 缺依赖后**绝不**进入 "请选择 SS2022 加密方式"；主流程立即终止并返回菜单
-- ☐ **(v1.0.16)** 菜单内不再执行任何包管理器：`grep -nE "apt-get install|apt-get update|dnf install|dnf makecache|yum install|yum makecache" ss2022-shadowtls-manager.sh` 命中项仅出现在提示文案，或独立的「自动校准时间」chrony 功能中；依赖检查路径零 apt/dnf/yum 执行
+- ☐ **(v1.0.16)** 菜单内不再执行任何包管理器：`grep -nE "apt-get install|apt-get update|dnf install|dnf makecache|yum install|yum makecache" ss2022-shadowtls-manager.sh` 命中项仅出现在提示文案中（含「自动校准时间」缺少 NTP 服务时的手动安装命令）；依赖检查与时间同步路径均零 apt/dnf/yum 执行
 - ☐ **(v1.0.16)** `grep -nE "是否现在尝试自动安装缺失依赖|自动安装必需依赖|ss2022-deps-install" ss2022-shadowtls-manager.sh` 应无输出
 - ☐ **(v1.0.16)** "请选择 SS2022 加密方式" 前不再出现 apt/dpkg 输出，菜单界面保持干净
 - ☐ **(v1.0.16)** 依赖自动安装改由 `install.sh` bootstrap 阶段负责（见「1. 一行安装 install.sh」）；干净 Debian 一行安装进入菜单后选择一键安装 SS2022，不应再触发 apt/dnf/yum
-- ☐ `qrencode` / `chrony` 不在 SS2022 安装流程中处理；时间同步未配置时只在「自动校准时间」中打印手动命令并询问是否安装 chrony，默认 No
+- ☐ `qrencode` / `chrony` 不在 SS2022 安装流程中处理；时间同步未配置时「自动校准时间」只打印手动安装命令并返回菜单，**(v1.0.17)** 不再询问是否安装 chrony、不执行 apt/dnf/yum
 
-## 2.6 网络与时间：自动校准时间（v1.0.15）
+## 2.6 网络与时间：自动校准时间（v1.0.17）
 
-- ☐ `timedatectl status` 显示 `NTP service: n/a` 时执行「网络与时间 → 自动校准时间」
+- ☐ **(v1.0.17 关键)** `timedatectl status` 显示 `NTP service: n/a`（系统无任何 NTP 服务）时执行「网络与时间 → 自动校准时间」：
   - 预期：先以简洁块状输出显示本地时间、UTC 时间、当前时区、时区偏移、NTP 功能、NTP 服务和同步结果
   - 不预期：默认输出 `--- timedatectl status 原始输出 ---` 或 raw `timedatectl status`
-  - 预期：提示当前系统没有可用 NTP 服务，并说明仅执行 `timedatectl set-ntp true` 通常不会生效
-- ☐ 出现 `是否现在尝试安装并启用 chrony？[y/N]:` 后直接回车
-  - 预期：默认不安装 chrony，提示 `已跳过安装。请手动安装 chrony 后再执行自动校准时间。`
-  - 不预期：执行 `apt-get` / `dnf` / `systemctl enable --now chrony`
-- ☐ `NTP service: n/a` 时默认不安装 chrony
-  - 预期：只有用户输入 `y` / `Y` 才进入 chrony 安装流程
-- ☐ 输入 `n` / `N`
-  - 预期：不安装 chrony，直接返回菜单
-- ☐ 输入 `y` / `Y` 后才尝试安装 chrony
-  - 预期：Debian/Ubuntu 路径为 `timeout 60s apt-get update` + `timeout 120s apt-get install -y chrony` + `systemctl enable --now chrony`
-  - 预期：CentOS/RHEL 路径为 `timeout 120s dnf install -y chrony` + `systemctl enable --now chronyd`
-  - 预期：没有 `timeout` 命令时提示 `当前系统没有 timeout 命令，安装过程可能受软件源速度影响。`
-- ☐ Debian/Ubuntu 安装 chrony 后应识别 `chrony.service`
-  - 预期：`detect_ntp_unit` 能检测 `systemd-timesyncd.service` / `chronyd.service` / `chrony.service`
-- ☐ chrony 安装命令 timeout 124 后，如果 `chrony.service` 已存在
-  - 预期：显示 `已检测到可用 NTP 服务：chrony.service` 和 `继续启用并检查时间同步状态。`
-  - 不预期：输出 `chrony 安装命令超时` 或误报 `chrony 安装失败或超时`
-- ☐ chrony 安装命令返回非 0 后，如果 `chrony.service` 已存在
-  - 预期：显示 `已检测到可用 NTP 服务：chrony.service` 和 `继续启用并检查时间同步状态。`
-  - 不预期：输出 `包管理器返回异常，但已检测到 NTP 服务` 或误报 `chrony 安装失败或超时`
-- ☐ chrony 安装成功后再次查看时间状态
-  - 预期：`synchronized=yes` 时只显示 `[成功] 系统时间已同步。`，不再继续提示安装超时
-  - 预期：首次同步仍为 `no` 且 unit active 时提示 `NTP 服务已运行，但尚未完成同步。` 和 `首次同步可能需要几十秒，请稍后再次查看。`
+  - 预期：块状提示 `当前系统没有可用 NTP 服务。` 与 `timedatectl 显示 NTP service: n/a 时，仅执行 set-ntp true 通常不会生效。`
+  - 预期：显示 `请先手动安装 chrony：`，含 Debian/Ubuntu 与 CentOS/RHEL 两套手动命令，并提示 `安装完成后重新运行：ss2022` 与 `然后进入：网络与时间 → 自动校准时间`
+  - 预期：随后直接返回菜单
+  - **绝不**出现 `是否现在尝试安装并启用 chrony？[y/N]:` 询问
+  - **绝不**执行 `apt-get` / `dnf` / `yum` 或 `systemctl enable --now chrony`
+  - **绝不**生成 `/tmp/ss2022-chrony-install.*.log`
+  - 不预期：菜单卡住，或 apt/dpkg 输出与提示混在一起
+- ☐ **(v1.0.17)** `grep -nE "是否现在尝试安装并启用 chrony|ss2022-chrony-install|apt-get install -y chrony|dnf install -y chrony|yum install -y chrony" ss2022-shadowtls-manager.sh` 命中项仅为手动命令提示文案，无实际执行路径
+- ☐ 系统已有 NTP 服务（`chrony` / `chronyd` / `systemd-timesyncd`）时自动校准时间：
+  - 预期：`detect_ntp_unit` 命中并显示 `使用 NTP 服务：<unit>`，启用并最多等待 30 秒检查同步
+  - 预期：同步完成提示 `系统时间已同步。`；首次未同步且 unit active 时提示 `NTP 服务已运行，但尚未完成同步。` 与 `首次同步可能需要几十秒，请稍后再次查看。`
 - ☐ `NTP service: active` 但 `System clock synchronized: no`
   - 预期：不应输出 `启用 chrony 失败` / `启用 chronyd 失败` / `启用 systemd-timesyncd 失败`
   - 预期：提示 NTP 服务已启用但系统尚未完成同步
-- ☐ chrony / chronyd 已 active
-  - 预期：显示 `NTP 服务已在运行：chrony.service` 或 `NTP 服务已在运行：chronyd.service`
-  - 预期：状态区显示 `NTP 服务：chrony.service（运行中）` 或 `chronyd.service（运行中）`
-- ☐ 自动校准时间后等待同步
-  - 预期：最多等待 30 秒检查 `NTPSynchronized`
-  - 预期：同步完成时提示 `系统时间已同步。`
-  - 预期：仍未同步时提示首次同步可能需要几十秒，请稍后再次查看状态
 - ☐ 等待 30 秒后 chrony / chronyd 仍未同步，且 `chronyc` 存在
-  - 预期：主状态后单独显示 `>>> chrony 诊断`
-  - 预期：输出 `chronyc tracking` 和 `chronyc sources -v` 只读诊断结果，原始输出每行不加 `[信息]`
-  - 预期：如果 `chronyc sources -v` 疑似全是 `^?`，提示没有可用上游时间源以及 DNS、UDP/123、IPv6 路由、机房网络或 NTP 源不可达等可能原因
-  - 预期：输出 chrony 配置和检查命令建议，但不把 `synchronized=no` 当作失败
-- ☐ `chronyc sources -v` 存在 `^*`
-  - 预期：提示 `当前最佳时间源：<源名>`
-  - 预期：提示 chrony 已检测到可用时间源，通常等待一段时间即可完成同步
-  - 不预期：提示修改 `/etc/chrony/chrony.conf`
-- ☐ `chronyc sources -v` 存在 `^+` 但没有 `^*`
-  - 预期：提示已检测到候选时间源但尚未选定最佳源
-  - 不预期：提示修改 `/etc/chrony/chrony.conf`
-- ☐ `chronyc sources -v` 没有 `^*` / `^+` 或输出为空
-  - 预期：才显示 DNS、UDP/123、IPv6 路由、机房网络限制、NTP 源不可达等可能原因
-  - 预期：才显示更换 NTP 源与修改 `chrony.conf` 建议
+  - 预期：主状态后单独显示 `>>> chrony 诊断`，输出 `chronyc tracking` 和 `chronyc sources -v` 只读诊断（原始输出每行不加 `[信息]`）
+  - 预期：`^*` 时提示 `当前最佳时间源：<源名>`；`^+` 无 `^*` 时提示候选源；无 `^*`/`^+` 或为空时才提示 DNS、UDP/123、IPv6 路由、机房网络限制、NTP 源不可达等可能原因与更换 NTP 源 / 修改 `chrony.conf` 建议
+  - 预期：不把 `synchronized=no` 当作失败
 - ☐ 等待 30 秒后 systemd-timesyncd 仍未同步
-  - 预期：提示 `timedatectl timesync-status`
-  - 预期：提示 `journalctl -u systemd-timesyncd -n 80 --no-pager`
-- ☐ chrony 安装后仍检测不到可用 NTP 服务
-  - 预期：只在此时提示 `chrony 安装失败或未检测到可用 NTP 服务。`
-  - 预期：手动安装提示为块状输出，不按每行重复 `[错误]` / `[警告]`
-  - 预期：不影响 SS2022 服务状态，不重启 / 停止 SS2022
+  - 预期：提示 `timedatectl timesync-status` 和 `journalctl -u systemd-timesyncd -n 80 --no-pager`
 - ☐ 自动校准时间输出不应错位
   - 预期：时间状态、chrony 诊断、手动命令各自成块显示
   - 不预期：raw `timedatectl` 与主状态混在一起
+  - 预期：不影响 SS2022 服务状态，不重启 / 停止 SS2022
 
 ## 3. 一键安装 SS2022
 
@@ -306,7 +278,7 @@
 
 - ☐ README 一行安装命令可被复制粘贴运行
 - ☐ README 显示当前版本号与 SCRIPT_VERSION 常量一致
-- ☐ install.sh 包含 `readonly INSTALLER_VERSION="v1.0.16"`，并与 MANAGER_VERSION / SCRIPT_VERSION 一致
+- ☐ install.sh 包含 `readonly INSTALLER_VERSION="v1.0.17"`，并与 MANAGER_VERSION / SCRIPT_VERSION 一致
 - ☐ CHANGELOG 包含从 v0.1.0 到当前版本的条目
 - ☐ TESTING.md（本文件）与实际行为一致
 
@@ -315,7 +287,7 @@
 ## 14. 反馈模板（用户报 bug 时请附）
 
 ```
-版本：v1.0.16
+版本：v1.0.17
 系统：Debian 12 / Ubuntu 22.04 / ...
 架构：x86_64 / aarch64
 

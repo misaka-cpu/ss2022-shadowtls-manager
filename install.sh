@@ -21,7 +21,7 @@
 set -o pipefail
 umask 077
 
-readonly INSTALLER_VERSION="v1.0.16"
+readonly INSTALLER_VERSION="v1.0.17"
 readonly SCRIPT_URL="https://raw.githubusercontent.com/misaka-cpu/ss2022-shadowtls-manager/main/ss2022-shadowtls-manager.sh"
 readonly INSTALL_PATH="/root/ss2022-shadowtls-manager.sh"
 readonly SHORTCUT_PATH="/usr/local/bin/ss2022"
@@ -180,6 +180,110 @@ ensure_bootstrap_deps() {
     exit 1
 }
 ensure_bootstrap_deps
+
+# -----------------------------------------------------------------------------
+# 2.5 可选：NTP 服务（chrony）准备
+#     SS2022 对系统时间较敏感，时间偏差过大可能导致 invalid timestamp。
+#     仅在缺少 NTP 服务时询问是否安装 chrony（默认 Yes）；
+#     chrony 不是主脚本运行必需依赖，安装失败不阻塞进入主菜单。
+#     不安装 qrencode，不设置 BBR，不修改防火墙 / nftables。
+# -----------------------------------------------------------------------------
+# 检测系统已有的 NTP 守护服务，命中则输出 unit 名（chrony / chronyd / systemd-timesyncd）
+detect_ntp_unit() {
+    local unit
+    have_cmd systemctl || return 0
+    for unit in chrony.service chronyd.service systemd-timesyncd.service; do
+        if systemctl list-unit-files "${unit}" 2>/dev/null | grep -q "^${unit}"; then
+            printf '%s' "${unit%.service}"
+            return 0
+        fi
+    done
+    return 0
+}
+
+print_chrony_manual_commands() {
+    cat <<'EOF'
+
+请手动安装 chrony：
+
+Debian/Ubuntu:
+  apt-get update
+  apt-get install -y chrony
+  systemctl enable --now chrony
+
+CentOS/RHEL:
+  dnf install -y chrony
+  systemctl enable --now chronyd
+EOF
+}
+
+# 缺少 NTP 服务时询问安装 chrony（默认 Yes）；安装失败仅警告并继续。
+ensure_ntp_service() {
+    local unit
+    unit="$(detect_ntp_unit)"
+    if [[ -n "${unit}" ]]; then
+        log_info "已检测到 NTP 服务：${unit}，跳过 chrony 安装提示。"
+        return 0
+    fi
+
+    local mgr=""
+    if   have_cmd apt-get; then mgr=apt-get
+    elif have_cmd dnf;     then mgr=dnf
+    elif have_cmd yum;     then mgr=yum
+    fi
+
+    log_warn "当前系统没有可用 NTP 服务。"
+    log_warn "SS2022 对系统时间较敏感，时间偏差过大可能导致 invalid timestamp。"
+    log_info "建议安装 chrony 作为时间同步服务。"
+
+    if [[ -z "${mgr}" ]]; then
+        log_warn "未找到 apt-get / dnf / yum，无法自动安装 chrony。"
+        print_chrony_manual_commands >&2
+        log_info "继续进入菜单（chrony 不是主脚本运行必需依赖）。"
+        return 0
+    fi
+
+    local ans
+    read -r -p "是否现在安装 chrony？[Y/n]: " ans
+    if [[ "${ans}" =~ ^[Nn]$ ]]; then
+        log_info "已跳过 chrony 安装。稍后可在 ss2022 菜单的「网络与时间」查看手动命令。"
+        return 0
+    fi
+
+    local chrony_log="/tmp/ss2022-bootstrap-chrony-install.$$.log"
+    : > "${chrony_log}" || { log_warn "无法创建 chrony 安装日志：${chrony_log}，已跳过 chrony 安装。"; return 0; }
+    log_info "正在安装 chrony，详细日志：${chrony_log}"
+
+    case "${mgr}" in
+        apt-get)
+            DEBIAN_FRONTEND=noninteractive run_with_timeout 60  apt-get update >> "${chrony_log}" 2>&1 || true
+            DEBIAN_FRONTEND=noninteractive run_with_timeout 120 apt-get install -y chrony >> "${chrony_log}" 2>&1 || true
+            run_with_timeout 30 systemctl enable --now chrony >> "${chrony_log}" 2>&1 || true
+            ;;
+        dnf)
+            run_with_timeout 120 dnf install -y chrony >> "${chrony_log}" 2>&1 || true
+            run_with_timeout 30 systemctl enable --now chronyd >> "${chrony_log}" 2>&1 || true
+            ;;
+        yum)
+            run_with_timeout 120 yum install -y chrony >> "${chrony_log}" 2>&1 || true
+            run_with_timeout 30 systemctl enable --now chronyd >> "${chrony_log}" 2>&1 || true
+            ;;
+    esac
+
+    # 二次检测：以 NTP 服务是否存在为准，不因 apt/dnf/systemctl 返回码异常就报失败
+    unit="$(detect_ntp_unit)"
+    if [[ -n "${unit}" ]]; then
+        log_ok "已检测到 NTP 服务：${unit}"
+        return 0
+    fi
+
+    log_warn "未检测到可用 NTP 服务。"
+    log_info "日志最后 30 行："
+    tail -30 "${chrony_log}" 2>/dev/null || true
+    log_info "继续进入菜单（chrony 不是主脚本运行必需依赖）。"
+    return 0
+}
+ensure_ntp_service
 
 # -----------------------------------------------------------------------------
 # 3. 下载到临时文件并校验

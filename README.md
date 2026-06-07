@@ -4,7 +4,7 @@ SS2022 + ShadowTLS v3 一体化管理脚本，适用于 Debian / Ubuntu / CentOS
 
 ## 当前状态
 
-- 当前版本：**v1.0.16**
+- 当前版本：**v1.0.17**
 - 状态：**稳定版**
 - 已在 Debian / Ubuntu / CentOS 9 上经过实测；仍建议先在干净 Debian / Ubuntu / CentOS 测试后再用于长期环境
 
@@ -45,14 +45,17 @@ bash <(curl -fsSL https://raw.githubusercontent.com/misaka-cpu/ss2022-shadowtls-
 `install.sh` 负责 bootstrap：
 1. 检查 root
 2. **自动准备主脚本运行所需的全部必需依赖**（`ca-certificates curl jq xz-utils iproute2 dnsutils` / RHEL 系为 `... xz iproute bind-utils`），并做二次检查
-3. 下载主脚本到 `/tmp` 临时文件并执行 `bash -n` 校验
-4. 备份旧版本并安装主脚本
-5. 创建或更新本项目的 `ss2022` 快捷命令
-6. `exec /root/ss2022-shadowtls-manager.sh` 直接进入交互菜单
+3. **若系统缺少 NTP 服务**（chrony / chronyd / systemd-timesyncd 均无），提示是否安装 `chrony`（默认安装，可输入 `n` 跳过）
+4. 下载主脚本到 `/tmp` 临时文件并执行 `bash -n` 校验
+5. 备份旧版本并安装主脚本
+6. 创建或更新本项目的 `ss2022` 快捷命令
+7. `exec /root/ss2022-shadowtls-manager.sh` 直接进入交互菜单
 
 > 依赖自动安装集中在 `install.sh` bootstrap 阶段完成。**主菜单内不会执行 `apt`/`dnf`/`yum`**，因此一键安装 SS2022 时不会出现菜单卡住或 apt/dpkg 输出与菜单提示混在一起的错乱问题。
 >
 > 若进入菜单后仍提示缺依赖，请重新运行上面的一行安装命令让 `install.sh` 自动修复，或按提示手动安装依赖后再运行 `ss2022`。
+
+> SS2022 对系统时间较敏感。若检测到系统没有 NTP 服务，`install.sh` 会建议安装 `chrony`（默认安装，可跳过），失败也不会阻塞进入菜单。**主菜单的「网络与时间 → 自动校准时间」只使用系统已有 NTP 服务、不会执行 `apt`/`dnf`/`yum`**；若 bootstrap 阶段跳过了 chrony，可按该菜单显示的手动命令自行安装后再回菜单校准时间。
 
 > 仓库 Private 时 `raw.githubusercontent.com` 无法直接访问，请改用 `scp` 或 `git pull` 把 `ss2022-shadowtls-manager.sh` 同步到 `/root/`，然后 `chmod +x && /root/ss2022-shadowtls-manager.sh`。
 
@@ -90,8 +93,8 @@ ss2022
 ## 主菜单
 
 ```
-SS2022 + ShadowTLS 管理脚本 v1.0.16
-版本：v1.0.16   监听模式：dual   IPv4：x.x.x.x   IPv6：xxxx::xxxx
+SS2022 + ShadowTLS 管理脚本 v1.0.17
+版本：v1.0.17   监听模式：dual   IPv4：x.x.x.x   IPv6：xxxx::xxxx
 SS2022    ：已安装 / 运行中   端口：18388   模式：tcp_only
 ShadowTLS ：已启用 / 运行中   端口：8443    伪装：www.bing.com
 时间同步：已同步   快捷命令：ss2022
@@ -181,7 +184,8 @@ ShadowTLS ：已启用 / 运行中   端口：8443    伪装：www.bing.com
 - **v1.0.13**：优化 chrony sources 诊断逻辑，存在 `^*` / `^+` 可用时间源时不再提示修改 `chrony.conf`；仅在无可用 NTP 源时显示更换 NTP 源建议
 - **v1.0.14**：优化自动安装依赖时的终端输出，包管理器原始输出写入临时日志；成功/失败提示改为简洁块状输出，避免 apt/dpkg 输出与菜单提示混在一起
 - **v1.0.15**：修复自动校准时间输出错乱；时间状态默认改为简洁块状输出，raw `timedatectl` 仅在详细诊断中显示；chrony 安装命令超时但 NTP 服务已可用时不再误导性警告
-- **v1.0.16**（当前）：将依赖自动安装移动到 `install.sh` bootstrap 阶段并做二次检查；主脚本菜单内不再执行 `apt`/`dnf`/`yum`，缺依赖时只显示当前系统对应修复命令并停止安装；彻底避免 apt/dpkg 输出与菜单提示混在一起，保持主安装流程干净稳定
+- **v1.0.16**：将依赖自动安装移动到 `install.sh` bootstrap 阶段并做二次检查；主脚本菜单内不再执行 `apt`/`dnf`/`yum`，缺依赖时只显示当前系统对应修复命令并停止安装；彻底避免 apt/dpkg 输出与菜单提示混在一起，保持主安装流程干净稳定
+- **v1.0.17**（当前）：主菜单内彻底取消 chrony 自动安装，「网络与时间 → 自动校准时间」只使用系统已有 NTP 服务、缺失时只显示手动安装命令并返回菜单；chrony 的可选安装移至 `install.sh` bootstrap 阶段（检测无 NTP 服务时询问，默认安装、可跳过、失败不阻塞进入菜单）
 - **v1.0.x**：仅修复缺陷，不引入 breaking change
 
 ## 贡献 / 反馈

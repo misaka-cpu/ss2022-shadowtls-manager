@@ -18,10 +18,10 @@ umask 077
 # 常量与路径定义（仅允许操作以下路径）
 # -----------------------------------------------------------------------------
 # 项目唯一版本常量；远程升级时从该常量提取版本号
-readonly MANAGER_VERSION="v1.0.16"
+readonly MANAGER_VERSION="v1.0.17"
 # 别名：兼容仍在 v0.1.5 及更早版本的客户端进行远程版本探测（它们 grep SCRIPT_VERSION）
 # 必须使用字面量字符串而非 "${MANAGER_VERSION}"，否则旧版客户端 grep + sed 提取到的是字面 ${MANAGER_VERSION}
-readonly SCRIPT_VERSION="v1.0.16"
+readonly SCRIPT_VERSION="v1.0.17"
 
 # 菜单返回码约定（v0.1.5）：
 #   - 普通返回（默认 0 / 非 10）：调用方按既有规则处理 press_any_key
@@ -3230,22 +3230,16 @@ EOF
     fi
 }
 
-run_with_timeout_if_available() {
-    local secs="$1"
-    shift
-    if _have_cmd timeout; then
-        timeout "${secs}s" "$@"
-    else
-        "$@"
-    fi
-}
-
-_print_chrony_manual_commands() {
+# 主菜单内不再自动安装 chrony：「自动校准时间」仅使用系统已有 NTP 服务。
+# 缺少 NTP 服务时只显示手动安装命令并返回菜单，不询问 y/N、不执行 apt/dnf/yum、不写日志。
+# chrony 的自动安装已移至 install.sh bootstrap 阶段（新机器一行安装时按需准备）。
+print_missing_ntp_service_hint() {
     cat <<'EOF'
 
-未检测到可用 NTP 服务。
+当前系统没有可用 NTP 服务。
+timedatectl 显示 NTP service: n/a 时，仅执行 set-ntp true 通常不会生效。
 
-可手动安装 chrony：
+请先手动安装 chrony：
 
 Debian/Ubuntu:
   apt-get update
@@ -3256,101 +3250,13 @@ CentOS/RHEL:
   dnf install -y chrony
   systemctl enable --now chronyd
 
+安装完成后重新运行：
+  ss2022
+
+然后进入：
+  网络与时间 → 自动校准时间
+
 EOF
-}
-
-install_chrony_interactive() {
-    log_warn "当前系统没有可用 NTP 服务。"
-    echo "timedatectl 显示 NTP service: n/a 时，仅执行 set-ntp true 通常不会生效。"
-    _print_chrony_manual_commands
-
-    local ans
-    read -r -p "是否现在尝试安装并启用 chrony？[y/N]: " ans
-    if [[ ! "${ans}" =~ ^[Yy]$ ]]; then
-        log_info "已跳过安装。请手动安装 chrony 后再执行自动校准时间。"
-        return 1
-    fi
-
-    if ! _have_cmd timeout; then
-        log_warn "当前系统没有 timeout 命令，安装过程可能受软件源速度影响。"
-    fi
-
-    local unit mgr install_rc=0 update_rc=0 pkg_rc=0 chrony_log
-    chrony_log="/tmp/ss2022-chrony-install.$$.log"
-    : > "${chrony_log}" || { log_error "无法创建 chrony 安装日志：${chrony_log}"; return 1; }
-    log_info "详细日志：${chrony_log}"
-
-    case "${OS_FAMILY}" in
-        debian)
-            if ! _have_cmd apt-get; then
-                log_error "未检测到 apt-get，无法安装 chrony。"
-                _print_chrony_manual_commands
-                return 1
-            fi
-            log_info "正在更新软件源索引（最多 60 秒）..."
-            run_with_timeout_if_available 60 apt-get update >> "${chrony_log}" 2>&1 || update_rc=$?
-            log_info "正在安装 chrony（最多 120 秒）..."
-            run_with_timeout_if_available 120 apt-get install -y chrony >> "${chrony_log}" 2>&1 || install_rc=$?
-            ;;
-        rhel)
-            mgr="$(_rhel_pkg_mgr_for_dependency_hint)"
-            if ! _have_cmd "${mgr}"; then
-                log_error "未检测到 dnf / yum，无法安装 chrony。"
-                _print_chrony_manual_commands
-                return 1
-            fi
-            log_info "正在安装 chrony（最多 120 秒）..."
-            run_with_timeout_if_available 120 "${mgr}" install -y chrony >> "${chrony_log}" 2>&1 || install_rc=$?
-            ;;
-        *)
-            log_error "无法识别当前系统，未自动安装 chrony。"
-            _print_chrony_manual_commands
-            return 1
-            ;;
-    esac
-
-    if [[ ${update_rc} -eq 124 || ${install_rc} -eq 124 ]]; then
-        pkg_rc=124
-    elif [[ ${install_rc} -ne 0 ]]; then
-        pkg_rc=${install_rc}
-    elif [[ ${update_rc} -ne 0 ]]; then
-        pkg_rc=${update_rc}
-    fi
-
-    unit="$(detect_ntp_unit)"
-    if [[ -z "${unit}" ]]; then
-        log_error "chrony 安装失败或未检测到可用 NTP 服务。"
-        log_info "安装日志最后 30 行："
-        tail -30 "${chrony_log}" 2>/dev/null || true
-        _print_chrony_manual_commands
-        return 1
-    fi
-
-    if [[ ${pkg_rc} -ne 0 ]]; then
-        log_info "已检测到可用 NTP 服务：${unit}"
-        log_info "继续启用并检查时间同步状态。"
-    fi
-
-    if ! enable_ntp_unit "${unit}"; then
-        show_time_status
-        return 1
-    fi
-
-    try_chrony_makestep "${unit}"
-    if wait_for_time_sync; then
-        log_ok "系统时间已同步。"
-        return 0
-    fi
-    show_time_status
-    if _ntp_unit_active "${unit}"; then
-        log_warn "NTP 服务已运行，但尚未完成同步。"
-        log_info "首次同步可能需要几十秒，请稍后再次查看。"
-        print_ntp_unsynced_diagnostics "${unit}"
-    else
-        log_warn "NTP 服务未运行，请手动检查："
-        echo "  systemctl status ${unit} --no-pager"
-        return 1
-    fi
 }
 
 sync_time_auto() {
@@ -3370,8 +3276,8 @@ sync_time_auto() {
     local unit
     unit="$(detect_ntp_unit)"
     if [[ -z "${unit}" ]]; then
-        install_chrony_interactive
-        return $?
+        print_missing_ntp_service_hint
+        return 1
     fi
 
     log_info "使用 NTP 服务：${unit}"

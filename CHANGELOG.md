@@ -8,6 +8,15 @@
 
 （暂无）
 
+## [v1.0.17] — chrony 安装移至 install.sh bootstrap 阶段
+
+### Changed
+- 主菜单内彻底取消 chrony 自动安装。
+- 「网络与时间 → 自动校准时间」只使用系统已有 NTP 服务，缺失时只显示手动安装命令并返回菜单。
+- install.sh bootstrap 阶段增加可选 chrony 安装提示（检测无 NTP 服务时询问，默认安装、可跳过）。
+- 避免网络与时间菜单内执行 apt/dnf/yum 导致终端卡住或输出错乱。
+- chrony 安装失败不影响主脚本启动，install.sh 仍进入菜单。
+
 ## [v1.0.16] — 依赖自动安装移至 install.sh bootstrap 阶段
 
 ### Changed
