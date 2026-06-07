@@ -4,7 +4,7 @@ SS2022 + ShadowTLS v3 一体化管理脚本，适用于 Debian / Ubuntu / CentOS
 
 ## 当前状态
 
-- 当前版本：**v1.0.15**
+- 当前版本：**v1.0.16**
 - 状态：**稳定版**
 - 已在 Debian / Ubuntu / CentOS 9 上经过实测；仍建议先在干净 Debian / Ubuntu / CentOS 测试后再用于长期环境
 
@@ -42,12 +42,17 @@ SS2022 + ShadowTLS v3 一体化管理脚本，适用于 Debian / Ubuntu / CentOS
 bash <(curl -fsSL https://raw.githubusercontent.com/misaka-cpu/ss2022-shadowtls-manager/main/install.sh)
 ```
 
-`install.sh` 只做最小 bootstrap：
-1. 检查 root + `curl` / `ca-certificates`
-2. 下载主脚本到 `/tmp` 临时文件并执行 `bash -n` 校验
-3. 备份旧版本并安装主脚本
-4. 创建或更新本项目的 `ss2022` 快捷命令
-5. `exec /root/ss2022-shadowtls-manager.sh` 直接进入交互菜单
+`install.sh` 负责 bootstrap：
+1. 检查 root
+2. **自动准备主脚本运行所需的全部必需依赖**（`ca-certificates curl jq xz-utils iproute2 dnsutils` / RHEL 系为 `... xz iproute bind-utils`），并做二次检查
+3. 下载主脚本到 `/tmp` 临时文件并执行 `bash -n` 校验
+4. 备份旧版本并安装主脚本
+5. 创建或更新本项目的 `ss2022` 快捷命令
+6. `exec /root/ss2022-shadowtls-manager.sh` 直接进入交互菜单
+
+> 依赖自动安装集中在 `install.sh` bootstrap 阶段完成。**主菜单内不会执行 `apt`/`dnf`/`yum`**，因此一键安装 SS2022 时不会出现菜单卡住或 apt/dpkg 输出与菜单提示混在一起的错乱问题。
+>
+> 若进入菜单后仍提示缺依赖，请重新运行上面的一行安装命令让 `install.sh` 自动修复，或按提示手动安装依赖后再运行 `ss2022`。
 
 > 仓库 Private 时 `raw.githubusercontent.com` 无法直接访问，请改用 `scp` 或 `git pull` 把 `ss2022-shadowtls-manager.sh` 同步到 `/root/`，然后 `chmod +x && /root/ss2022-shadowtls-manager.sh`。
 
@@ -85,8 +90,8 @@ ss2022
 ## 主菜单
 
 ```
-SS2022 + ShadowTLS 管理脚本 v1.0.15
-版本：v1.0.15   监听模式：dual   IPv4：x.x.x.x   IPv6：xxxx::xxxx
+SS2022 + ShadowTLS 管理脚本 v1.0.16
+版本：v1.0.16   监听模式：dual   IPv4：x.x.x.x   IPv6：xxxx::xxxx
 SS2022    ：已安装 / 运行中   端口：18388   模式：tcp_only
 ShadowTLS ：已启用 / 运行中   端口：8443    伪装：www.bing.com
 时间同步：已同步   快捷命令：ss2022
@@ -175,7 +180,8 @@ ShadowTLS ：已启用 / 运行中   端口：8443    伪装：www.bing.com
 - **v1.0.12**：自动校准时间等待后仍未同步时增加 chrony / systemd-timesyncd 排障提示；chrony/chronyd 会输出 `chronyc tracking` 与 `chronyc sources -v`，并提示上游时间源不可达的常见原因
 - **v1.0.13**：优化 chrony sources 诊断逻辑，存在 `^*` / `^+` 可用时间源时不再提示修改 `chrony.conf`；仅在无可用 NTP 源时显示更换 NTP 源建议
 - **v1.0.14**：优化自动安装依赖时的终端输出，包管理器原始输出写入临时日志；成功/失败提示改为简洁块状输出，避免 apt/dpkg 输出与菜单提示混在一起
-- **v1.0.15**（当前）：修复自动校准时间输出错乱；时间状态默认改为简洁块状输出，raw `timedatectl` 仅在详细诊断中显示；chrony 安装命令超时但 NTP 服务已可用时不再误导性警告
+- **v1.0.15**：修复自动校准时间输出错乱；时间状态默认改为简洁块状输出，raw `timedatectl` 仅在详细诊断中显示；chrony 安装命令超时但 NTP 服务已可用时不再误导性警告
+- **v1.0.16**（当前）：将依赖自动安装移动到 `install.sh` bootstrap 阶段并做二次检查；主脚本菜单内不再执行 `apt`/`dnf`/`yum`，缺依赖时只显示当前系统对应修复命令并停止安装；彻底避免 apt/dpkg 输出与菜单提示混在一起，保持主安装流程干净稳定
 - **v1.0.x**：仅修复缺陷，不引入 breaking change
 
 ## 贡献 / 反馈

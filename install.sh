@@ -21,7 +21,7 @@
 set -o pipefail
 umask 077
 
-readonly INSTALLER_VERSION="v1.0.15"
+readonly INSTALLER_VERSION="v1.0.16"
 readonly SCRIPT_URL="https://raw.githubusercontent.com/misaka-cpu/ss2022-shadowtls-manager/main/ss2022-shadowtls-manager.sh"
 readonly INSTALL_PATH="/root/ss2022-shadowtls-manager.sh"
 readonly SHORTCUT_PATH="/usr/local/bin/ss2022"
@@ -60,45 +60,11 @@ if [[ "${EUID}" -ne 0 ]]; then
 fi
 
 # -----------------------------------------------------------------------------
-# 2. 检查并安装基础依赖（curl / ca-certificates）—— 支持 apt-get / dnf / yum
+# 2. bootstrap 依赖：安装主脚本运行所需的全部必需依赖（apt-get / dnf / yum）
+#    依赖自动安装集中在此 bootstrap 阶段完成，主脚本菜单内不再执行包管理器，
+#    避免 apt/dpkg 输出与交互菜单提示混在一起导致终端错乱。
+#    仅安装主脚本运行必需依赖；不安装 qrencode / chrony / BBR / 防火墙 / nftables。
 # -----------------------------------------------------------------------------
-print_source_hint() {
-    local mgr="$1"
-    log_warn "请手动测试软件源后重试。"
-    case "${mgr}" in
-        dnf|yum)
-            cat <<EOF
-可能原因：
-  1) VPS 到软件源网络慢
-  2) DNS 解析慢
-  3) IPv6 路由异常
-  4) 镜像源不可用
-  5) 系统软件源配置异常
-
-手动修复命令：
-  ${mgr} makecache
-  ${mgr} install -y ca-certificates curl
-
-EOF
-            ;;
-        *)
-            cat <<'EOF'
-可能原因：
-  1) VPS 到软件源网络慢
-  2) DNS 解析慢
-  3) IPv6 路由异常
-  4) 镜像源不可用
-  5) 系统软件源配置异常
-
-手动修复命令：
-  apt-get update
-  apt-get install -y ca-certificates curl
-
-EOF
-            ;;
-    esac
-}
-
 print_dep_log_tail() {
     local dep_log="$1"
     log_info "详细日志：${dep_log}"
@@ -110,66 +76,110 @@ print_dep_log_tail() {
     fi
 }
 
-ensure_dep_curl() {
-    if have_cmd curl; then
-        return 0
-    fi
-    log_warn "未检测到 curl，尝试自动安装..."
+# 必需命令是否齐全（与主脚本 _required_cmds_missing 保持一致）。
+# 以空格分隔返回用户可读缺失项标签：curl jq xz/xzcat ip ss dig/nslookup
+required_cmds_missing() {
+    local miss=()
+    have_cmd curl                           || miss+=(curl)
+    have_cmd jq                             || miss+=(jq)
+    { have_cmd xz   || have_cmd xzcat;   }  || miss+=(xz/xzcat)
+    have_cmd ip                             || miss+=(ip)
+    have_cmd ss                             || miss+=(ss)
+    { have_cmd dig  || have_cmd nslookup; } || miss+=(dig/nslookup)
+    printf '%s' "${miss[*]}"
+}
+
+print_missing_items() {
+    local item
+    for item in $1; do
+        printf '  - %s\n' "${item}"
+    done
+}
+
+# 按包管理器打印手动安装命令（缺依赖时给用户兜底）
+print_manual_dep_command() {
+    local mgr="$1"
+    case "${mgr}" in
+        dnf|yum)
+            printf '  %s makecache && \\\n' "${mgr}"
+            printf '  %s install -y ca-certificates curl jq xz iproute bind-utils\n' "${mgr}"
+            ;;
+        *)
+            cat <<'EOF'
+  apt-get update && \
+  apt-get install -y ca-certificates curl jq xz-utils iproute2 dnsutils
+EOF
+            ;;
+    esac
+}
+
+# 安装主脚本必需依赖并做二次检查；屏幕输出保持简洁，包管理器详细输出写日志。
+ensure_bootstrap_deps() {
+    log_info "正在检查 bootstrap 依赖..."
 
     local mgr=""
     if   have_cmd apt-get; then mgr=apt-get
     elif have_cmd dnf;     then mgr=dnf
     elif have_cmd yum;     then mgr=yum
     fi
+
+    local missing
+    missing="$(required_cmds_missing)"
+    if [[ -z "${missing}" ]]; then
+        log_ok "bootstrap 依赖已满足"
+        return 0
+    fi
+
     if [[ -z "${mgr}" ]]; then
-        log_error "未找到 apt-get / dnf / yum；请手动安装 curl 与 ca-certificates 后重试"
+        log_error "未找到 apt-get / dnf / yum，无法自动安装依赖。"
+        log_warn "请手动安装以下依赖后重试："
+        print_manual_dep_command apt-get >&2
         exit 1
     fi
 
     local dep_log="/tmp/ss2022-bootstrap-deps-install.$$.log"
     : > "${dep_log}" || { log_error "无法创建依赖安装日志：${dep_log}"; exit 1; }
+    log_info "正在安装缺失依赖，详细日志：${dep_log}"
 
-    log_info "正在自动安装 curl / ca-certificates，安装最多等待 120 秒..."
-    log_info "详细日志：${dep_log}"
     local rc=0 update_rc=0
     case "${mgr}" in
         apt-get)
-            log_info "正在更新软件包索引..."
-            DEBIAN_FRONTEND=noninteractive run_with_timeout 60 apt-get update >> "${dep_log}" 2>&1 || update_rc=$?
-            log_info "正在安装 curl / ca-certificates..."
-            DEBIAN_FRONTEND=noninteractive run_with_timeout 120 apt-get install -y curl ca-certificates >> "${dep_log}" 2>&1 || rc=$?
+            DEBIAN_FRONTEND=noninteractive run_with_timeout 60  apt-get update >> "${dep_log}" 2>&1 || update_rc=$?
+            DEBIAN_FRONTEND=noninteractive run_with_timeout 120 apt-get install -y ca-certificates curl jq xz-utils iproute2 dnsutils >> "${dep_log}" 2>&1 || rc=$?
             ;;
         dnf)
-            log_info "正在更新软件包索引..."
-            run_with_timeout 60 dnf makecache -y >> "${dep_log}" 2>&1 || update_rc=$?
-            log_info "正在安装 curl / ca-certificates..."
-            run_with_timeout 120 dnf install -y curl ca-certificates >> "${dep_log}" 2>&1 || rc=$?
+            run_with_timeout 60  dnf makecache -y >> "${dep_log}" 2>&1 || update_rc=$?
+            run_with_timeout 120 dnf install -y ca-certificates curl jq xz iproute bind-utils >> "${dep_log}" 2>&1 || rc=$?
             ;;
         yum)
-            log_info "正在更新软件包索引..."
-            run_with_timeout 60 yum makecache >> "${dep_log}" 2>&1 || update_rc=$?
-            log_info "正在安装 curl / ca-certificates..."
-            run_with_timeout 120 yum install -y curl ca-certificates >> "${dep_log}" 2>&1 || rc=$?
+            run_with_timeout 60  yum makecache    >> "${dep_log}" 2>&1 || update_rc=$?
+            run_with_timeout 120 yum install -y ca-certificates curl jq xz iproute bind-utils >> "${dep_log}" 2>&1 || rc=$?
             ;;
     esac
 
-    if ! have_cmd curl; then
-        if [[ ${update_rc} -eq 124 || ${rc} -eq 124 ]]; then
-            log_error "安装 curl / ca-certificates 超时，软件源响应过慢，已放弃。"
-        else
-            log_error "curl 安装失败（rc=${rc}）；请手动安装 curl 与 ca-certificates 后重试"
+    # 二次检查：以命令是否真的存在作为最终判定（覆盖 install 报 0 但部分包未装等情况）
+    missing="$(required_cmds_missing)"
+    if [[ -z "${missing}" ]]; then
+        if [[ ${update_rc} -ne 0 || ${rc} -ne 0 ]]; then
+            log_warn "包管理器返回异常，但必需命令已可用，继续。"
+            log_info "如需排查，查看日志：${dep_log}"
         fi
-        print_dep_log_tail "${dep_log}"
-        print_source_hint "${mgr}"
-        exit 1
+        log_ok "bootstrap 依赖已满足"
+        return 0
     fi
-    if [[ ${update_rc} -ne 0 || ${rc} -ne 0 ]]; then
-        log_warn "包管理器返回异常，但 curl 已可用，继续安装。"
-        log_info "如需排查，查看日志：${dep_log}"
-    fi
-    log_ok "curl / ca-certificates 已安装"
+
+    log_error "bootstrap 依赖仍然缺失，无法进入菜单。"
+    {
+        printf '缺失项：\n'
+        print_missing_items "${missing}"
+        printf '\n'
+    } >&2
+    print_dep_log_tail "${dep_log}"
+    log_warn "请手动安装以下依赖后重试（修复软件源后再执行）："
+    print_manual_dep_command "${mgr}" >&2
+    exit 1
 }
-ensure_dep_curl
+ensure_bootstrap_deps
 
 # -----------------------------------------------------------------------------
 # 3. 下载到临时文件并校验

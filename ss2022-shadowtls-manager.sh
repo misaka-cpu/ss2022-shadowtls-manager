@@ -18,10 +18,10 @@ umask 077
 # 常量与路径定义（仅允许操作以下路径）
 # -----------------------------------------------------------------------------
 # 项目唯一版本常量；远程升级时从该常量提取版本号
-readonly MANAGER_VERSION="v1.0.15"
+readonly MANAGER_VERSION="v1.0.16"
 # 别名：兼容仍在 v0.1.5 及更早版本的客户端进行远程版本探测（它们 grep SCRIPT_VERSION）
 # 必须使用字面量字符串而非 "${MANAGER_VERSION}"，否则旧版客户端 grep + sed 提取到的是字面 ${MANAGER_VERSION}
-readonly SCRIPT_VERSION="v1.0.15"
+readonly SCRIPT_VERSION="v1.0.16"
 
 # 菜单返回码约定（v0.1.5）：
 #   - 普通返回（默认 0 / 非 10）：调用方按既有规则处理 press_any_key
@@ -271,41 +271,10 @@ _print_dependency_failure_block() {
     {
         printf '\n缺失项：\n'
         _print_missing_items_plain "${missing}"
-        printf '\n推荐修复命令：\n'
-        _print_current_manual_install_command_plain
-        cat <<'EOF'
-
-常见原因：
-  1) 软件源网络慢
-  2) DNS 解析异常
-  3) IPv6 路由异常
-  4) 镜像源不可用
-  5) 系统软件源配置异常
-
-修复后重新运行：
-  ss2022
-
-EOF
-    } >&2
-}
-
-_print_auto_install_failed_block() {
-    local missing="$1" dep_log="$2"
-    log_error "自动安装依赖失败，仍缺少必需命令。"
-    {
-        printf '缺失项：\n'
-        _print_missing_items_plain "${missing}"
-        printf '\n'
-    } >&2
-    log_info "详细日志：${dep_log}"
-    log_info "安装日志最后 30 行："
-    if [[ -f "${dep_log}" ]]; then
-        tail -30 "${dep_log}"
-    else
-        log_warn "日志文件不存在：${dep_log}"
-    fi
-    {
-        printf '\n推荐修复命令：\n'
+        printf '\n推荐修复方式：\n'
+        printf '\n方式一：重新运行一行安装命令，让 install.sh 自动修复依赖：\n'
+        printf '  bash <(curl -fsSL https://raw.githubusercontent.com/misaka-cpu/ss2022-shadowtls-manager/main/install.sh)\n'
+        printf '\n方式二：手动安装依赖：\n'
         _print_current_manual_install_command_plain
         cat <<'EOF'
 
@@ -316,63 +285,9 @@ EOF
     } >&2
 }
 
-_run_dep_cmd_with_timeout() {
-    local secs="$1"
-    local dep_log="$2"
-    shift
-    shift
-    if _have_cmd timeout; then
-        timeout "${secs}s" "$@" >> "${dep_log}" 2>&1
-    else
-        "$@" >> "${dep_log}" 2>&1
-    fi
-}
-
-_auto_install_required_deps() {
-    local dep_log="$1"
-    if ! _have_cmd timeout; then
-        log_warn "当前系统没有 timeout 命令，安装过程可能受软件源速度影响。"
-    fi
-
-    local mgr update_rc=0 install_rc=0 final_rc=0
-    case "${OS_FAMILY}" in
-        debian)
-            if ! _have_cmd apt-get; then
-                log_error "未检测到 apt-get，无法自动安装依赖。"
-                return 127
-            fi
-            log_info "正在更新软件包索引..."
-            _run_dep_cmd_with_timeout 60 "${dep_log}" apt-get update || update_rc=$?
-            log_info "正在安装必需依赖..."
-            _run_dep_cmd_with_timeout 120 "${dep_log}" apt-get install -y ca-certificates curl jq xz-utils iproute2 dnsutils || install_rc=$?
-            ;;
-        rhel)
-            mgr="$(_rhel_pkg_mgr_for_dependency_hint)"
-            if ! _have_cmd "${mgr}"; then
-                log_error "未检测到 dnf / yum，无法自动安装依赖。"
-                return 127
-            fi
-            log_info "正在更新软件包索引..."
-            _run_dep_cmd_with_timeout 60 "${dep_log}" "${mgr}" makecache || update_rc=$?
-            log_info "正在安装必需依赖..."
-            _run_dep_cmd_with_timeout 120 "${dep_log}" "${mgr}" install -y ca-certificates curl jq xz iproute bind-utils || install_rc=$?
-            ;;
-        *)
-            log_error "无法识别当前系统，未自动安装依赖。"
-            return 127
-            ;;
-    esac
-    if [[ ${update_rc} -eq 124 || ${install_rc} -eq 124 ]]; then
-        final_rc=124
-    elif [[ ${install_rc} -ne 0 ]]; then
-        final_rc=${install_rc}
-    elif [[ ${update_rc} -ne 0 ]]; then
-        final_rc=${update_rc}
-    fi
-    return "${final_rc}"
-}
-
-# v1.0.8：默认仅检查；用户明确输入 y 时才批量安装必需依赖并二次检查。
+# 菜单内不再执行任何包管理器（apt/dnf/yum）：仅检查必需命令是否齐全。
+# 依赖自动安装已移动到 install.sh bootstrap 阶段，避免 apt/dpkg 输出污染菜单界面。
+# 缺依赖时只显示当前系统对应的修复命令并停止安装，不再询问 y/N、不再自动安装。
 install_dependencies() {
     log_step "检查基础依赖"
 
@@ -384,36 +299,6 @@ install_dependencies() {
     fi
 
     _print_dependency_failure_block "${missing}"
-
-    local ans
-    read -r -p "是否现在尝试自动安装缺失依赖？[y/N]: " ans
-    if [[ "${ans}" =~ ^[Yy]$ ]]; then
-        local install_rc=0 dep_log missing_after
-        dep_log="/tmp/ss2022-deps-install.$$.log"
-        : > "${dep_log}" || { log_error "无法创建依赖安装日志：${dep_log}"; return 1; }
-        log_info "正在自动安装必需依赖，最多等待 120 秒..."
-        log_info "详细日志：${dep_log}"
-        _auto_install_required_deps "${dep_log}" || install_rc=$?
-
-        if [[ ${install_rc} -eq 124 ]]; then
-            log_warn "包管理器执行超时，正在重新检查依赖是否已经可用..."
-        fi
-
-        missing_after="$(_required_cmds_missing)"
-        if [[ -z "${missing_after}" ]]; then
-            if [[ ${install_rc} -ne 0 ]]; then
-                log_warn "包管理器返回异常，但必需命令已可用，继续安装。"
-                log_info "如需排查，查看日志：${dep_log}"
-            fi
-            log_ok "必需依赖已满足"
-            printf '\n'
-            return 0
-        fi
-
-        _print_auto_install_failed_block "${missing_after}" "${dep_log}"
-        return 1
-    fi
-
     return 1
 }
 

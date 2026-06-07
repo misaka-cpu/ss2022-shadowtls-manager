@@ -24,11 +24,16 @@
 ## 1. 一行安装 install.sh
 
 - ☐ 非 root 直接跑 `install.sh` → 提示 "请使用 root 用户运行：sudo -i" 并退出
-- ☐ root 跑 `install.sh`，缺少 `curl` → 自动 `apt-get install -y curl ca-certificates`（索引 60s 超时 / 安装 120s 超时；包管理器详细输出写入 `/tmp/ss2022-bootstrap-deps-install.$$.log`）
+- ☐ root 跑 `install.sh` → 打印 `[信息] 正在检查 bootstrap 依赖...`；缺依赖时打印 `[信息] 正在安装缺失依赖，详细日志：/tmp/ss2022-bootstrap-deps-install.$$.log`
+- ☐ **(v1.0.16)** 干净 Debian/Ubuntu：`install.sh` 自动安装 `ca-certificates curl jq xz-utils iproute2 dnsutils`（索引 60s 超时 / 安装 120s 超时；apt/dpkg 原始输出写入 bootstrap 日志，不刷屏）
+- ☐ **(v1.0.16)** CentOS/RHEL：`install.sh` 自动安装 `ca-certificates curl jq xz iproute bind-utils`
+- ☐ **(v1.0.16)** 安装后二次检查 `curl` / `jq` / `xz·xzcat` / `ip·ss` / `dig·nslookup` 全部可用 → 打印 `[成功] bootstrap 依赖已满足` → 继续下载主脚本并进入菜单
+- ☐ **(v1.0.16)** 二次检查仍缺依赖：打印 `[错误] bootstrap 依赖仍然缺失，无法进入菜单。` + 缺失项 + 日志最后 30 行（`tail -30`）+ 当前系统手动命令 → `exit 1`，不进入菜单
 - ☐ `install.sh` 下载主脚本到 `/tmp/ss2022-shadowtls-manager.sh.tmp.$$` → 跑 `bash -n` 通过 → 备份旧版本 → 安装到 `/root/ss2022-shadowtls-manager.sh` → `exec` 进入主菜单
 - ☐ 故意制造下载失败（网络阻断 / 私有仓库）：旧版本不被覆盖；提示"如果仓库为 Private，请使用 scp 或 git pull 手动同步"
 - ☐ `install.sh` 不写 `/usr/local/bin/ss2022`（快捷命令由主脚本 SS2022 安装成功后才创建）
 - ☐ `install.sh` 不安装 systemd 服务、不动 nftables、不动防火墙
+- ☐ **(v1.0.16)** `install.sh` 不安装 `qrencode` / `chrony` / BBR / 防火墙 / nftables，不启动 `ss2022.service`，只准备脚本运行环境
 - ☐ 软件源不可用情景：手动让 apt/dnf 阻塞 → 总等待应 ≤ 60 + 120 = 180 秒；失败时显示日志路径、最后 30 行和手动修复命令
 
 ---
@@ -43,33 +48,23 @@
 
 ---
 
-## 2.5 依赖检查（默认不自动安装，可手动确认）
+## 2.5 依赖检查（菜单内仅检查，不执行包管理器）
 
 - ☐ 必需命令齐全时：依赖阶段只打印 `>>> 检查基础依赖` + `[成功] 必需依赖已满足`，零等待，立即进入加密方式选择
-- ☐ **(v1.0.8 关键)** 必需依赖缺失（如未安装 `jq` / `xz` / `dig` 任一）时：
+- ☐ **(v1.0.16 关键)** 必需依赖缺失（如未安装 `jq` / `xz` / `dig` 任一）时直接运行主脚本：
   - ☐ `[错误] 缺少必需依赖，无法继续安装 SS2022。`
   - ☐ 块状输出 `缺失项：`，逐行列出 `  - jq` / `  - xz/xzcat` / `  - dig/nslookup` 等可读标签，块内不重复 `[错误]`
-  - ☐ 出现 `是否现在尝试自动安装缺失依赖？[y/N]:`
-  - ☐ 直接回车默认不自动安装，并显示当前系统对应的块状 `推荐修复命令`
-  - ☐ 输入 `n` / `N` 不自动安装，并显示当前系统对应的块状 `推荐修复命令`
+  - ☐ **绝不**出现 `是否现在尝试自动安装缺失依赖？[y/N]:` 询问，也不触发任何 apt/dnf/yum
+  - ☐ 块状输出 `推荐修复方式：`，包含「方式一：重新运行一行安装命令」（带 `install.sh` 一行命令，交由 bootstrap 自动修复）与「方式二：手动安装依赖」
   - ☐ Debian/Ubuntu 只显示 apt 修复命令
   - ☐ CentOS/RHEL 只显示 dnf / yum 修复命令
   - ☐ 系统未知时才同时显示 Debian/Ubuntu 与 CentOS/RHEL 两套命令
-  - ☐ 回车 / `n` 后**绝不**进入 "请选择 SS2022 加密方式"；主流程立即终止并返回菜单
-- ☐ **(v1.0.8 自动安装)** 输入 `y` / `Y` 后才尝试自动安装：
-  - ☐ Debian/Ubuntu 路径为 `timeout 60s apt-get update` + `timeout 120s apt-get install -y ca-certificates curl jq xz-utils iproute2 dnsutils`
-  - ☐ CentOS/RHEL 路径为 `timeout 60s dnf/yum makecache` + `timeout 120s dnf/yum install -y ca-certificates curl jq xz iproute bind-utils`
-  - ☐ **(v1.0.14)** 缺依赖时选择 `y` 自动安装，屏幕只显示简洁状态和 `/tmp/ss2022-deps-install.$$.log` 日志路径
-  - ☐ **(v1.0.14)** apt/dpkg/dnf/yum 原始输出不应直接刷屏，必须写入依赖安装日志
-  - ☐ 没有 `timeout` 命令时提示 `当前系统没有 timeout 命令，安装过程可能受软件源速度影响。`
-  - ☐ 自动安装只批量安装必需依赖，不安装 `qrencode` / `chrony`
-  - ☐ 无论包管理器返回 0、非 0 还是 timeout，自动安装后都重新执行 `_required_cmds_missing`
-  - ☐ 包管理器返回非 0 但依赖已齐全时，输出 `包管理器返回异常，但必需命令已可用，继续安装。`、日志路径和 `[成功] 必需依赖已满足`
-  - ☐ timeout 124 时先提示正在重新检查依赖是否已经可用，再按二次检查结果决定是否停止
-  - ☐ 自动安装成功后，`请选择 SS2022 加密方式` 不应和警告行或包管理器输出混在同一行
-  - ☐ 自动安装后仍缺依赖时输出块状 `自动安装依赖失败，仍缺少必需命令。`，列出缺失项，显示日志路径和最后 30 行，返回菜单
-  - ☐ 自动安装失败或依赖仍缺失时**绝不**进入 "请选择 SS2022 加密方式"
-- ☐ **(v1.0.14)** `install.sh` 仍保持最小 bootstrap：curl / ca-certificates、下载主脚本、`bash -n` 校验、创建 `ss2022` 快捷命令、打开主菜单；不安装 jq / xz / iproute / dnsutils / bind-utils；失败时显示 bootstrap 日志路径和最后 30 行
+  - ☐ 末尾提示 `修复后重新运行：ss2022`
+  - ☐ 缺依赖后**绝不**进入 "请选择 SS2022 加密方式"；主流程立即终止并返回菜单
+- ☐ **(v1.0.16)** 菜单内不再执行任何包管理器：`grep -nE "apt-get install|apt-get update|dnf install|dnf makecache|yum install|yum makecache" ss2022-shadowtls-manager.sh` 命中项仅出现在提示文案，或独立的「自动校准时间」chrony 功能中；依赖检查路径零 apt/dnf/yum 执行
+- ☐ **(v1.0.16)** `grep -nE "是否现在尝试自动安装缺失依赖|自动安装必需依赖|ss2022-deps-install" ss2022-shadowtls-manager.sh` 应无输出
+- ☐ **(v1.0.16)** "请选择 SS2022 加密方式" 前不再出现 apt/dpkg 输出，菜单界面保持干净
+- ☐ **(v1.0.16)** 依赖自动安装改由 `install.sh` bootstrap 阶段负责（见「1. 一行安装 install.sh」）；干净 Debian 一行安装进入菜单后选择一键安装 SS2022，不应再触发 apt/dnf/yum
 - ☐ `qrencode` / `chrony` 不在 SS2022 安装流程中处理；时间同步未配置时只在「自动校准时间」中打印手动命令并询问是否安装 chrony，默认 No
 
 ## 2.6 网络与时间：自动校准时间（v1.0.15）
@@ -311,7 +306,7 @@
 
 - ☐ README 一行安装命令可被复制粘贴运行
 - ☐ README 显示当前版本号与 SCRIPT_VERSION 常量一致
-- ☐ install.sh 包含 `readonly INSTALLER_VERSION="v1.0.15"`，并与 MANAGER_VERSION / SCRIPT_VERSION 一致
+- ☐ install.sh 包含 `readonly INSTALLER_VERSION="v1.0.16"`，并与 MANAGER_VERSION / SCRIPT_VERSION 一致
 - ☐ CHANGELOG 包含从 v0.1.0 到当前版本的条目
 - ☐ TESTING.md（本文件）与实际行为一致
 
@@ -320,7 +315,7 @@
 ## 14. 反馈模板（用户报 bug 时请附）
 
 ```
-版本：v1.0.15
+版本：v1.0.16
 系统：Debian 12 / Ubuntu 22.04 / ...
 架构：x86_64 / aarch64
 
