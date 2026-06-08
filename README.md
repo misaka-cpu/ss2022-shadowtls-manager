@@ -4,7 +4,7 @@ SS2022 + ShadowTLS v3 一体化管理脚本，适用于 Debian / Ubuntu / CentOS
 
 ## 当前状态
 
-- 当前版本：**v1.0.17**
+- 当前版本：**v1.0.18**
 - 状态：**稳定版**
 - 已在 Debian / Ubuntu / CentOS 9 上经过实测；仍建议先在干净 Debian / Ubuntu / CentOS 测试后再用于长期环境
 
@@ -16,7 +16,7 @@ SS2022 + ShadowTLS v3 一体化管理脚本，适用于 Debian / Ubuntu / CentOS
 4. **安装/启用完成直接显示完整文字链接**：只在终端输出推荐 ss:// / SS+ShadowTLS 合并链接，无需再去其它菜单，亦不渲染图像、不保存任何文件
 5. **支持 IPv4 / IPv6 / 双栈**：URI 自动加 `[ ]`、`[::]:port` 监听拼接精确
 6. **支持 sing-box / mihomo / Clash Meta / Shadowrocket / Surge 客户端配置输出**
-7. **支持时间同步检查和校准**：按发行版自动选择 `systemd-timesyncd` / `chronyd` / `chrony`；缺失 NTP 服务时可手动确认安装 chrony，默认不安装
+7. **支持时间同步检查和校准**：按发行版自动选择 `systemd-timesyncd` / `chronyd` / `chrony`；`install.sh` bootstrap 阶段可提示安装 chrony，主菜单内只使用已有 NTP 服务
 8. **统一一键检查更新**：管理脚本本体 + `shadowsocks-rust` + `shadow-tls` + 快捷命令 wrapper 一表呈现，下载后 `bash -n` 校验通过才覆盖
 9. **一键完整卸载**：严格停服 + 残留进程 TERM/KILL + 端口释放检测 + 备份到 `/root/ss2022-shadowtls-backup-<日期>/`，完成后显示详细总结
 10. **安全边界**：
@@ -93,8 +93,8 @@ ss2022
 ## 主菜单
 
 ```
-SS2022 + ShadowTLS 管理脚本 v1.0.17
-版本：v1.0.17   监听模式：dual   IPv4：x.x.x.x   IPv6：xxxx::xxxx
+SS2022 + ShadowTLS 管理脚本 v1.0.18
+版本：v1.0.18   监听模式：dual   IPv4：x.x.x.x   IPv6：xxxx::xxxx
 SS2022    ：已安装 / 运行中   端口：18388   模式：tcp_only
 ShadowTLS ：已启用 / 运行中   端口：8443    伪装：www.bing.com
 时间同步：已同步   快捷命令：ss2022
@@ -185,7 +185,8 @@ ShadowTLS ：已启用 / 运行中   端口：8443    伪装：www.bing.com
 - **v1.0.14**：优化自动安装依赖时的终端输出，包管理器原始输出写入临时日志；成功/失败提示改为简洁块状输出，避免 apt/dpkg 输出与菜单提示混在一起
 - **v1.0.15**：修复自动校准时间输出错乱；时间状态默认改为简洁块状输出，raw `timedatectl` 仅在详细诊断中显示；chrony 安装命令超时但 NTP 服务已可用时不再误导性警告
 - **v1.0.16**：将依赖自动安装移动到 `install.sh` bootstrap 阶段并做二次检查；主脚本菜单内不再执行 `apt`/`dnf`/`yum`，缺依赖时只显示当前系统对应修复命令并停止安装；彻底避免 apt/dpkg 输出与菜单提示混在一起，保持主安装流程干净稳定
-- **v1.0.17**（当前）：主菜单内彻底取消 chrony 自动安装，「网络与时间 → 自动校准时间」只使用系统已有 NTP 服务、缺失时只显示手动安装命令并返回菜单；chrony 的可选安装移至 `install.sh` bootstrap 阶段（检测无 NTP 服务时询问，默认安装、可跳过、失败不阻塞进入菜单）
+- **v1.0.17**：主菜单内彻底取消 chrony 自动安装，「网络与时间 → 自动校准时间」只使用系统已有 NTP 服务、缺失时只显示手动安装命令并返回菜单；chrony 的可选安装移至 `install.sh` bootstrap 阶段（检测无 NTP 服务时询问，默认安装、可跳过、失败不阻塞进入菜单）
+- **v1.0.18**（当前）：简化 `install.sh` bootstrap 阶段终端输出；依赖和 chrony 日志路径改为单独块状显示；避免新机器一行安装时长中文提示在 SSH 终端横向错位；进入主菜单前增加清晰分隔
 - **v1.0.x**：仅修复缺陷，不引入 breaking change
 
 ## 贡献 / 反馈

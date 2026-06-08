@@ -18,10 +18,10 @@ umask 077
 # 常量与路径定义（仅允许操作以下路径）
 # -----------------------------------------------------------------------------
 # 项目唯一版本常量；远程升级时从该常量提取版本号
-readonly MANAGER_VERSION="v1.0.17"
+readonly MANAGER_VERSION="v1.0.18"
 # 别名：兼容仍在 v0.1.5 及更早版本的客户端进行远程版本探测（它们 grep SCRIPT_VERSION）
 # 必须使用字面量字符串而非 "${MANAGER_VERSION}"，否则旧版客户端 grep + sed 提取到的是字面 ${MANAGER_VERSION}
-readonly SCRIPT_VERSION="v1.0.17"
+readonly SCRIPT_VERSION="v1.0.18"
 
 # 菜单返回码约定（v0.1.5）：
 #   - 普通返回（默认 0 / 非 10）：调用方按既有规则处理 press_any_key
@@ -1200,6 +1200,7 @@ install_ss2022() {
     fi
 
     # 选择加密方式
+    echo
     echo "请选择 SS2022 加密方式："
     echo "  1) 2022-blake3-aes-128-gcm  (默认)"
     echo "  2) 2022-blake3-aes-256-gcm"

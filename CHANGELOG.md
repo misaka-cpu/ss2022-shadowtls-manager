@@ -8,6 +8,14 @@
 
 （暂无）
 
+## [v1.0.18] — 简化 install.sh bootstrap 输出
+
+### Changed
+- 简化 install.sh bootstrap 阶段终端输出。
+- 长日志路径和说明改为块状输出。
+- 避免 bootstrap 依赖/chrony 提示在 SSH 终端错位。
+- 进入菜单前增加清晰分隔。
+
 ## [v1.0.17] — chrony 安装移至 install.sh bootstrap 阶段
 
 ### Changed
