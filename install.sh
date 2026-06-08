@@ -21,7 +21,7 @@
 set -o pipefail
 umask 077
 
-readonly INSTALLER_VERSION="v1.0.18"
+readonly INSTALLER_VERSION="v1.0.19"
 readonly SCRIPT_URL="https://raw.githubusercontent.com/misaka-cpu/ss2022-shadowtls-manager/main/ss2022-shadowtls-manager.sh"
 readonly INSTALL_PATH="/root/ss2022-shadowtls-manager.sh"
 readonly SHORTCUT_PATH="/usr/local/bin/ss2022"
@@ -447,9 +447,9 @@ create_shortcut
 # 6. 启动主菜单
 # -----------------------------------------------------------------------------
 cat <<'EOF'
-----------------------------------------
+------------------------------------------------------------
 准备完成，正在打开 ss2022 菜单...
-----------------------------------------
+------------------------------------------------------------
 
 EOF
 sleep 1

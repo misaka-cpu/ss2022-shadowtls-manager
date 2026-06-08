@@ -18,10 +18,10 @@ umask 077
 # 常量与路径定义（仅允许操作以下路径）
 # -----------------------------------------------------------------------------
 # 项目唯一版本常量；远程升级时从该常量提取版本号
-readonly MANAGER_VERSION="v1.0.18"
+readonly MANAGER_VERSION="v1.0.19"
 # 别名：兼容仍在 v0.1.5 及更早版本的客户端进行远程版本探测（它们 grep SCRIPT_VERSION）
 # 必须使用字面量字符串而非 "${MANAGER_VERSION}"，否则旧版客户端 grep + sed 提取到的是字面 ${MANAGER_VERSION}
-readonly SCRIPT_VERSION="v1.0.18"
+readonly SCRIPT_VERSION="v1.0.19"
 
 # 菜单返回码约定（v0.1.5）：
 #   - 普通返回（默认 0 / 非 10）：调用方按既有规则处理 press_any_key
@@ -98,7 +98,7 @@ log_ok()    { printf '%s[成功]%s %s\n' "${C_GREEN}"  "${C_RESET}" "$*"; }
 log_warn()  { printf '%s[警告]%s %s\n' "${C_YELLOW}" "${C_RESET}" "$*"; }
 log_error() { printf '%s[错误]%s %s\n' "${C_RED}"    "${C_RESET}" "$*" >&2; }
 log_step()  { printf '\n%s>>> %s%s\n'  "${C_CYAN}"   "$*" "${C_RESET}"; }
-hr()        { printf -- '----------------------------------------------------------------\n'; }
+hr()        { echo "------------------------------------------------------------"; }
 
 # 出错时给出下一步建议
 suggest() {
@@ -1073,16 +1073,17 @@ journal_follow_safe() {
 # 日志子菜单：最近 100 行 / 安全实时跟随；执行完返回菜单
 log_menu() {
     while :; do
-        clear 2>/dev/null || true
+        menu_sep
         cat <<'EOF'
-查看日志：
+查看日志:
   1) 查看 SS2022 最近 100 行日志
   2) 查看 ShadowTLS 最近 100 行日志
   3) 跟踪 SS2022 实时日志（Ctrl+C 返回）
   4) 跟踪 ShadowTLS 实时日志（Ctrl+C 返回）
   0) 返回
 EOF
-        read -r -p "请输入选项: " c
+        menu_sep
+        read_menu_choice c
         case "${c}" in
             1) journal_recent      "${SS_SERVICE_NAME}" ;;
             2) journal_recent      "${STLS_SERVICE_NAME}" ;;
@@ -1656,6 +1657,7 @@ remove_shortcut_command() {
 # 一键完整卸载：仅删除本项目创建的内容；不动 nftables / apt 包 / 其它代理
 uninstall_all() {
     log_step "一键完整卸载"
+    hr
     cat <<EOF
 将停止并禁用以下服务（如存在）：
   - ${STLS_SERVICE_NAME}
@@ -1681,12 +1683,21 @@ uninstall_all() {
   - 已安装的 apt / dnf / yum 包（curl / jq / chrony / wget 等）
   - 防火墙的 ufw / firewalld 端口规则（请按需自行清理）
 
-${C_YELLOW}一键完整卸载将直接删除本项目配置和服务文件，不再备份。请确认你已经保存好节点信息。${C_RESET}
-${C_RED}此操作不可逆。${C_RESET}
-如需保留配置或后续可恢复，请改用「启用 / 配置 ShadowTLS → 卸载 ShadowTLS」或「高级设置 → 修改 SS2022 → 卸载 SS2022（单独）」——
+一键完整卸载将直接删除本项目配置和服务文件。
+不会备份。
+请确认你已经保存好节点信息。
+
+此操作不可逆。
+
+如需保留配置或后续可恢复，请改用：
+  启用 / 配置 ShadowTLS → 卸载 ShadowTLS
+  高级设置 → 修改 SS2022 → 卸载 SS2022（单独）
+
 这两个单独卸载会自动备份配置。
 EOF
-    read -r -p "请输入 YES 确认完整卸载： " ans
+    hr
+    echo "请输入 YES 确认完整卸载:"
+    read -r ans
     [[ "${ans}" == "YES" ]] || { log_info "已取消"; return; }
 
     # 0) 在停服前快照"将要释放的端口"
@@ -2514,7 +2525,11 @@ gen_mihomo_only() {
 # 节点链接输出（仅文字链接，不输出任何图形 / 图片格式）
 # -----------------------------------------------------------------------------
 confirm_show_secret() {
-    read -r -p "是否显示完整链接？完整链接包含密码，请勿公开分享。[y/N]: " a
+    hr
+    echo "是否显示完整链接?"
+    echo "完整链接包含密码，请勿公开分享。"
+    echo "[y/N]"
+    read -r a
     [[ "${a}" =~ ^[Yy]$ ]]
 }
 
@@ -2618,12 +2633,16 @@ set_udp_mode() {
     [[ "$(info_get '.ss2022.installed')" == "true" ]] || { log_error "请先安装 SS2022"; return; }
     local stls_enabled
     stls_enabled="$(info_get '.shadowtls.enabled')"
-    echo "UDP 模式："
-    echo "  1) 禁用 UDP（推荐启用 ShadowTLS 时）"
-    echo "  2) 仅 UDP 直连：SS2022 单独保留 UDP 公网端口（与 ShadowTLS 共存）"
-    echo "  3) tcp_and_udp：SS2022 同端口承担 TCP+UDP（仅在未启用 ShadowTLS 时合理）"
-    echo "  0) 返回"
-    read -r -p "选择 [0-3]: " m
+    menu_sep
+    cat <<'EOF'
+UDP 模式:
+  1) 禁用 UDP（推荐启用 ShadowTLS 时）
+  2) 仅 UDP 直连：SS2022 单独保留 UDP 公网端口（与 ShadowTLS 共存）
+  3) tcp_and_udp：SS2022 同端口承担 TCP+UDP（仅在未启用 ShadowTLS 时合理）
+  0) 返回
+EOF
+    menu_sep
+    read_menu_choice m
     case "${m}" in
         0) return ${MENU_RC_SKIP_PAUSE} ;;
         1)
@@ -2786,9 +2805,9 @@ check_time_status() {
 # 简短中文状态，用于主菜单状态栏
 time_status_label() {
     case "$(check_time_status)" in
-        synced)   printf '%s已同步%s' "${C_GREEN}" "${C_RESET}" ;;
-        unsynced) printf '%s未同步%s' "${C_YELLOW}" "${C_RESET}" ;;
-        *)        printf '%s未检测%s' "${C_YELLOW}" "${C_RESET}" ;;
+        synced)   printf '已同步' ;;
+        unsynced) printf '未同步' ;;
+        *)        printf '未检测' ;;
     esac
 }
 
@@ -3325,16 +3344,20 @@ set_timezone_interactive() {
     fi
     local before_tz
     before_tz="$(_current_timezone)"
+    menu_sep
     echo "当前时区：${before_tz:-未知}"
-    echo "设置时区："
-    echo "  1) Asia/Shanghai"
-    echo "  2) Asia/Hong_Kong"
-    echo "  3) Asia/Taipei"
-    echo "  4) Asia/Tokyo"
-    echo "  5) UTC"
-    echo "  6) 自定义输入"
-    echo "  0) 返回"
-    read -r -p "选择 [0-6]: " ch
+    cat <<'EOF'
+设置时区:
+  1) Asia/Shanghai
+  2) Asia/Hong_Kong
+  3) Asia/Taipei
+  4) Asia/Tokyo
+  5) UTC
+  6) 自定义输入
+  0) 返回
+EOF
+    menu_sep
+    read_menu_choice ch
     local tz=""
     case "${ch}" in
         0) return ${MENU_RC_SKIP_PAUSE} ;;
@@ -3833,26 +3856,26 @@ check_and_update_all() {
     hr
     cat <<EOF
 管理脚本：
-  - 当前版本    ：${mgr_cur}
-  - 远程版本    ：${mgr_remote:-未知}
-  - 当前运行路径：${mgr_run_path:-未识别}
-  - 快捷命令路径：${mgr_shortcut_path}
-  - 快捷命令指向：${mgr_shortcut_target}
-  - 状态        ：${mgr_state}
+  - 当前版本: ${mgr_cur}
+  - 远程版本: ${mgr_remote:-未知}
+  - 当前运行路径: ${mgr_run_path:-未识别}
+  - 快捷命令路径: ${mgr_shortcut_path}
+  - 快捷命令指向: ${mgr_shortcut_target}
+  - 状态: ${mgr_state}
 
 shadowsocks-rust：
-  - 当前版本：${ss_cur}
-  - 最新版本：${ss_latest:-未知}
-  - 状态    ：${ss_state}
+  - 当前版本: ${ss_cur}
+  - 最新版本: ${ss_latest:-未知}
+  - 状态: ${ss_state}
 
 shadow-tls：
-  - 当前版本：${stls_cur}
-  - 最新版本：${stls_latest:-未知}
-  - 状态    ：${stls_state}
+  - 当前版本: ${stls_cur}
+  - 最新版本: ${stls_latest:-未知}
+  - 状态: ${stls_state}
 
 快捷命令：
-  - 路径    ：${SHORTCUT_PATH}
-  - 状态    ：${sc_state}
+  - 路径: ${SHORTCUT_PATH}
+  - 状态: ${sc_state}
 EOF
     hr
 
@@ -3871,7 +3894,8 @@ EOF
         return 0
     fi
 
-    read -r -p "是否执行可用更新? [y/N]: " a
+    echo "是否执行可用更新? [y/N]"
+    read -r a
     [[ "${a}" =~ ^[Yy]$ ]] || { log_info "已取消"; return; }
 
     # ---------- 应用更新 ----------
@@ -3892,8 +3916,11 @@ EOF
     if [[ -n "${_MGR_UPDATE_TARGET}" ]]; then
         hr
         log_ok "已更新，请重新运行 ss2022"
-        log_info "新版本：${_MGR_UPDATE_VERSION:-未知}   主脚本路径：${_MGR_UPDATE_TARGET}"
-        read -r -p "是否立即重新启动新版管理菜单? [Y/n]: " a
+        log_info "新版本：${_MGR_UPDATE_VERSION:-未知}"
+        echo "主脚本路径:"
+        echo "  ${_MGR_UPDATE_TARGET}"
+        echo "是否立即重新启动新版管理菜单? [Y/n]"
+        read -r a
         if [[ ! "${a}" =~ ^[Nn]$ ]]; then
             log_info "正在以新版本重新启动..."
             exec "${_MGR_UPDATE_TARGET}"
@@ -3928,14 +3955,14 @@ status_line() {
 
     local ss_active stls_active
     if (( ss_installed )) && systemctl is-active --quiet "${SS_SERVICE_NAME}" 2>/dev/null; then
-        ss_active="${C_GREEN}运行中${C_RESET}"
+        ss_active="运行中"
     else
-        ss_active="${C_RED}未运行${C_RESET}"
+        ss_active="未运行"
     fi
     if (( stls_installed )) && systemctl is-active --quiet "${STLS_SERVICE_NAME}" 2>/dev/null; then
-        stls_active="${C_GREEN}运行中${C_RESET}"
+        stls_active="运行中"
     else
-        stls_active="${C_RED}未运行${C_RESET}"
+        stls_active="未运行"
     fi
 
     # 未安装时端口 / 模式显示 N/A，避免给残留 info.json 留下读数错觉
@@ -3959,19 +3986,16 @@ status_line() {
         stls_dom_disp="N/A"
     fi
 
-    # 5 行紧凑状态栏
-    printf '版本：%s   监听模式：%s   IPv4：%s   IPv6：%s\n' \
-        "${MANAGER_VERSION}" "${mode:-dual}" "${v4:-未检测}" "${v6:-未检测}"
-    printf 'SS2022    ：%s / %s   端口：%s   模式：%s\n' \
-        "${ss_label}" "${ss_active}" "${ss_port_disp}" "${ss_mode_disp}"
+    echo "版本: ${MANAGER_VERSION}  监听模式: ${mode:-dual}"
+    echo "IPv4: ${v4:-未检测}"
+    echo "IPv6: ${v6:-未检测}"
+    echo "SS2022: ${ss_label} / ${ss_active}  端口: ${ss_port_disp}  模式: ${ss_mode_disp}"
     if (( stls_enabled )); then
-        printf 'ShadowTLS ：%s / %s   端口：%s   伪装：%s\n' \
-            "已启用" "${stls_active}" "${stls_port_disp}" "${stls_dom_disp}"
+        echo "ShadowTLS: 已启用 / ${stls_active}  端口: ${stls_port_disp}  伪装: ${stls_dom_disp}"
     else
-        printf 'ShadowTLS ：%s / %s   端口：%s\n' \
-            "${stls_label}" "${stls_active}" "${stls_port_disp}"
+        echo "ShadowTLS: ${stls_label} / ${stls_active}  端口: ${stls_port_disp}"
     fi
-    printf '时间同步：%s   快捷命令：%s\n' "$(time_status_label)" "$(shortcut_status_label)"
+    echo "时间同步: $(time_status_label)  快捷命令: $(shortcut_status_label)"
 }
 
 # 快捷命令 3 态：
@@ -3980,23 +4004,31 @@ status_line() {
 #   - 路径存在但缺少标记       → 显示 "冲突"（红）
 shortcut_status_label() {
     if shortcut_installed; then
-        printf '%sss2022%s' "${C_GREEN}" "${C_RESET}"
+        printf 'ss2022'
     elif [[ -e "${SHORTCUT_PATH}" ]]; then
-        printf '%s冲突%s'   "${C_RED}"   "${C_RESET}"
+        printf '冲突'
     else
-        printf '%s未安装%s' "${C_YELLOW}" "${C_RESET}"
+        printf '未安装'
     fi
 }
 
+menu_sep() {
+    hr
+}
+
+read_menu_choice() {
+    echo "请输入选项:"
+    read -r "$1"
+}
+
 print_main_menu() {
-    clear 2>/dev/null || true
     cat <<EOF
-${C_BOLD}SS2022 + ShadowTLS 管理脚本 ${MANAGER_VERSION}${C_RESET}
+SS2022 + ShadowTLS 管理脚本 ${MANAGER_VERSION}
 EOF
     status_line
-    hr
+    menu_sep
     cat <<'EOF'
-主菜单：
+主菜单:
   1) 一键安装 / 重装
   2) 启用 / 配置 ShadowTLS
   3) 查看节点信息
@@ -4007,22 +4039,23 @@ EOF
   8) 一键完整卸载
   0) 退出
 EOF
-    hr
+    menu_sep
 }
 
 # ----------- 子菜单 -----------
 
 submenu_shadowtls() {
     while :; do
-        clear 2>/dev/null || true
+        menu_sep
         cat <<'EOF'
-ShadowTLS v3：
+ShadowTLS v3:
   1) 启用 ShadowTLS v3
   2) 停用 ShadowTLS（保留二进制和配置）
   3) 卸载 ShadowTLS（删除二进制和配置）
   0) 返回主菜单
 EOF
-        read -r -p "请输入选项: " c
+        menu_sep
+        read_menu_choice c
         case "${c}" in
             1) enable_shadowtls ;;
             2) disable_shadowtls ;;
@@ -4036,9 +4069,9 @@ EOF
 
 submenu_service() {
     while :; do
-        clear 2>/dev/null || true
+        menu_sep
         cat <<'EOF'
-服务管理：
+服务管理:
   1) 重启全部服务（SS2022 + ShadowTLS）
   2) 查看服务状态
   3) 查看日志（最近 100 行 / 实时跟踪，Ctrl+C 返回）
@@ -4046,7 +4079,8 @@ submenu_service() {
   5) 停止服务
   0) 返回主菜单
 EOF
-        read -r -p "请输入选项: " c
+        menu_sep
+        read_menu_choice c
         case "${c}" in
             1) restart_service "${SS_SERVICE_NAME}"
                [[ "$(info_get '.shadowtls.enabled')" == "true" ]] && restart_service "${STLS_SERVICE_NAME}"
@@ -4071,9 +4105,9 @@ EOF
 
 submenu_network_time() {
     while :; do
-        clear 2>/dev/null || true
+        menu_sep
         cat <<'EOF'
-网络与时间：
+网络与时间:
   1) 检测公网 IP（IPv4 / IPv6）
   2) 设置服务器域名
   3) 设置监听模式（IPv4 / IPv6 / 双栈）
@@ -4083,7 +4117,8 @@ submenu_network_time() {
   7) 设置时区
   0) 返回主菜单
 EOF
-        read -r -p "请输入选项: " c
+        menu_sep
+        read_menu_choice c
         case "${c}" in
             1) refresh_public_ips ;;
             2) set_server_domain ;;
@@ -4107,16 +4142,17 @@ EOF
 
 submenu_modify_ss2022() {
     while :; do
-        clear 2>/dev/null || true
+        menu_sep
         cat <<'EOF'
-修改 SS2022 设置：
+修改 SS2022 设置:
   1) 修改端口
   2) 修改密码
   3) 修改加密方式
   4) 卸载 SS2022（保留 ShadowTLS / 不动其它）
   0) 返回上一级
 EOF
-        read -r -p "请输入选项: " c
+        menu_sep
+        read_menu_choice c
         case "${c}" in
             1) modify_ss2022_port ;;
             2) modify_ss2022_password ;;
@@ -4131,15 +4167,16 @@ EOF
 
 submenu_modify_shadowtls() {
     while :; do
-        clear 2>/dev/null || true
+        menu_sep
         cat <<'EOF'
-修改 ShadowTLS 设置：
+修改 ShadowTLS 设置:
   1) 修改端口
   2) 修改密码
   3) 修改伪装域名
   0) 返回上一级
 EOF
-        read -r -p "请输入选项: " c
+        menu_sep
+        read_menu_choice c
         case "${c}" in
             1) modify_stls_port ;;
             2) modify_stls_password ;;
@@ -4153,15 +4190,16 @@ EOF
 
 submenu_udp_bbr() {
     while :; do
-        clear 2>/dev/null || true
+        menu_sep
         cat <<'EOF'
-UDP / BBR 设置：
+UDP / BBR 设置:
   1) 设置 UDP 模式
   2) 启用 BBR
   3) 查看系统优化状态
   0) 返回上一级
 EOF
-        read -r -p "请输入选项: " c
+        menu_sep
+        read_menu_choice c
         case "${c}" in
             1) set_udp_mode
                # 用户在 UDP 模式菜单按 0 → MENU_RC_SKIP_PAUSE，跳过 press_any_key
@@ -4178,15 +4216,16 @@ EOF
 
 submenu_advanced() {
     while :; do
-        clear 2>/dev/null || true
+        menu_sep
         cat <<'EOF'
-高级设置：
+高级设置:
   1) 修改 SS2022 设置
   2) 修改 ShadowTLS 设置
   3) UDP / BBR 设置
   0) 返回主菜单
 EOF
-        read -r -p "请输入选项: " c
+        menu_sep
+        read_menu_choice c
         case "${c}" in
             1) submenu_modify_ss2022 ;;
             2) submenu_modify_shadowtls ;;
@@ -4216,7 +4255,7 @@ dispatch() {
 main_loop() {
     while :; do
         print_main_menu
-        read -r -p "请输入选项: " choice
+        read_menu_choice choice
         dispatch "${choice}"
         # 子菜单内部自己处理 press_any_key；主菜单的一键动作再补一次
         case "${choice}" in
