@@ -37,14 +37,18 @@
 - ☐ `install.sh` 创建或更新本项目 `/usr/local/bin/ss2022` wrapper；已存在但缺少本项目标记时不覆盖
 - ☐ `install.sh` 不安装 systemd 服务、不动 nftables、不动防火墙
 - ☐ **(v1.0.16)** `install.sh` 不安装 `qrencode` / BBR / 防火墙 / nftables，不启动 `ss2022.service`，只准备脚本运行环境
-- ☐ **(v1.0.19)** bootstrap 依赖完成后、下载主脚本前，`install.sh` 以 `[2/4] 检查时间同步` 检测 NTP 服务；已有 `chrony` / `chronyd` / `systemd-timesyncd` 时块状显示已检测到的 `.service`
-- ☐ **(v1.0.19)** `NTP service: n/a`（无任何 NTP 服务）运行 `install.sh`：打印 `未检测到 NTP 服务。`、时间敏感说明、`建议安装 chrony。`，并询问 `现在安装 chrony? [Y/n]:`（默认 Yes）
-- ☐ **(v1.0.19)** 询问时直接回车或输入 `y`/`Y` → 安装 chrony，屏幕只显示 `正在安装 chrony...` + `日志：` + `/tmp/ss2022-bootstrap-chrony-install.$$.log` 单独一行；Debian/Ubuntu 走 `apt-get`、RHEL 系走 `dnf`/`yum`，并 `systemctl enable --now chrony`/`chronyd`
-- ☐ **(v1.0.19)** 询问时输入 `n`/`N` → 打印 `已跳过 chrony 安装。` + `稍后可在 ss2022 菜单中查看手动命令。`，继续进入菜单
-- ☐ **(v1.0.19)** 安装后二次检测 NTP 服务存在 → 块状显示 `已检测到 NTP 服务：` + `.service`，**不因 apt/dnf/systemctl 返回码异常就报失败**
-- ☐ **(v1.0.19)** chrony 安装失败（仍无 NTP 服务）→ 打印 `未检测到可用 NTP 服务。` + `这不会影响进入 ss2022 菜单。` + `日志最后 30 行：` + `tail -30` 日志 + 继续进入主菜单（chrony 不是主脚本运行必需依赖，不中断 `install.sh`）
+- ☐ **(v1.0.20)** bootstrap 依赖完成后、下载主脚本前，`install.sh` 以 `[2/4] 检查时间同步` 检测 NTP 服务；已有 `systemd-timesyncd` / `chrony` / `chronyd` 时块状显示已检测到的 `.service`
+- ☐ **(v1.0.20)** 干净新机器无 NTP 服务时运行一行安装：
+  - ☐ 不询问是否安装 chrony
+  - ☐ 不执行 apt/dnf/yum 安装 chrony
+  - ☐ 不执行 `systemctl enable --now chrony` / `systemctl enable --now chronyd`
+  - ☐ 不生成 `/tmp/ss2022-bootstrap-chrony-install.$$.log`
+  - ☐ 只显示 `未检测到 NTP 服务。`、时间敏感说明、手动安装 chrony 命令和菜单内查看路径
+  - ☐ 继续进入菜单，不因缺少 NTP 服务退出或阻塞
+- ☐ **(v1.0.20)** 第二次运行一行安装时，NTP 检查显示路径不应与第一次有明显显示差异；不能依赖第二次已有 chrony / 状态变化来绕过首次路径
+- ☐ **(v1.0.20)** `install.sh` 首次安装路径输出必须固定左对齐，不使用居中、多列、动态宽度或补空格排版
 - ☐ **(v1.0.19)** 新机器一行安装时，依赖安装提示不应横向错位
-- ☐ **(v1.0.19)** chrony 提示不应出现长行错乱
+- ☐ **(v1.0.20)** chrony 手动提示不应出现长行错乱
 - ☐ **(v1.0.19)** apt/dnf/yum 原始输出仍写入日志，不刷屏
 - ☐ **(v1.0.19)** 进入菜单前显示：
   - ☐ `------------------------------------------------------------`
@@ -89,11 +93,11 @@
 - ☐ **(v1.0.16)** `grep -nE "是否现在尝试自动安装缺失依赖|自动安装必需依赖|ss2022-deps-install" ss2022-shadowtls-manager.sh` 应无输出
 - ☐ **(v1.0.16)** "请选择 SS2022 加密方式" 前不再出现 apt/dpkg 输出，菜单界面保持干净
 - ☐ **(v1.0.16)** 依赖自动安装改由 `install.sh` bootstrap 阶段负责（见「1. 一行安装 install.sh」）；干净 Debian 一行安装进入菜单后选择一键安装 SS2022，不应再触发 apt/dnf/yum
-- ☐ `qrencode` / `chrony` 不在 SS2022 安装流程中处理；时间同步未配置时「自动校准时间」只打印手动安装命令并返回菜单，**(v1.0.19)** 不再询问是否安装 chrony、不执行 apt/dnf/yum
+- ☐ `qrencode` / `chrony` 不在 SS2022 安装流程中处理；时间同步未配置时「自动校准时间」只打印手动安装命令并返回菜单，**(v1.0.20)** 不再询问是否安装 chrony、不执行 apt/dnf/yum
 
-## 2.6 网络与时间：自动校准时间（v1.0.19）
+## 2.6 网络与时间：自动校准时间（v1.0.20）
 
-- ☐ **(v1.0.19 关键)** `timedatectl status` 显示 `NTP service: n/a`（系统无任何 NTP 服务）时执行「网络与时间 → 自动校准时间」：
+- ☐ **(v1.0.20 关键)** `timedatectl status` 显示 `NTP service: n/a`（系统无任何 NTP 服务）时执行「网络与时间 → 自动校准时间」：
   - 预期：先以简洁块状输出显示本地时间、UTC 时间、当前时区、时区偏移、NTP 功能、NTP 服务和同步结果
   - 不预期：默认输出 `--- timedatectl status 原始输出 ---` 或 raw `timedatectl status`
   - 预期：块状提示 `当前系统没有可用 NTP 服务。` 与 `timedatectl 显示 NTP service: n/a 时，仅执行 set-ntp true 通常不会生效。`
@@ -103,7 +107,7 @@
   - **绝不**执行 `apt-get` / `dnf` / `yum` 或 `systemctl enable --now chrony`
   - **绝不**生成 `/tmp/ss2022-chrony-install.*.log`
   - 不预期：菜单卡住，或 apt/dpkg 输出与提示混在一起
-- ☐ **(v1.0.19)** `grep -nE "是否现在尝试安装并启用 chrony|ss2022-chrony-install|apt-get install -y chrony|dnf install -y chrony|yum install -y chrony" ss2022-shadowtls-manager.sh` 命中项仅为手动命令提示文案，无实际执行路径
+- ☐ **(v1.0.20)** `grep -nE "是否现在尝试安装并启用 chrony|ss2022-chrony-install|apt-get install -y chrony|dnf install -y chrony|yum install -y chrony" ss2022-shadowtls-manager.sh` 命中项仅为手动命令提示文案，无实际执行路径
 - ☐ 系统已有 NTP 服务（`chrony` / `chronyd` / `systemd-timesyncd`）时自动校准时间：
   - 预期：`detect_ntp_unit` 命中并显示 `使用 NTP 服务：<unit>`，启用并最多等待 30 秒检查同步
   - 预期：同步完成提示 `系统时间已同步。`；首次未同步且 unit active 时提示 `NTP 服务已运行，但尚未完成同步。` 与 `首次同步可能需要几十秒，请稍后再次查看。`
@@ -296,7 +300,7 @@
 
 - ☐ README 一行安装命令可被复制粘贴运行
 - ☐ README 显示当前版本号与 SCRIPT_VERSION 常量一致
-- ☐ install.sh 包含 `readonly INSTALLER_VERSION="v1.0.19"`，并与 MANAGER_VERSION / SCRIPT_VERSION 一致
+- ☐ install.sh 包含 `readonly INSTALLER_VERSION="v1.0.20"`，并与 MANAGER_VERSION / SCRIPT_VERSION 一致
 - ☐ CHANGELOG 包含从 v0.1.0 到当前版本的条目
 - ☐ TESTING.md（本文件）与实际行为一致
 
@@ -305,7 +309,7 @@
 ## 14. 反馈模板（用户报 bug 时请附）
 
 ```
-版本：v1.0.19
+版本：v1.0.20
 系统：Debian 12 / Ubuntu 22.04 / ...
 架构：x86_64 / aarch64
 

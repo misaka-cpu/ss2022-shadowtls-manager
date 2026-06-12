@@ -4,7 +4,7 @@ SS2022 + ShadowTLS v3 一体化管理脚本，适用于 Debian / Ubuntu / CentOS
 
 ## 当前状态
 
-- 当前版本：**v1.0.19**
+- 当前版本：**v1.0.20**
 - 状态：**稳定版**
 - 已在 Debian / Ubuntu / CentOS 9 上经过实测；仍建议先在干净 Debian / Ubuntu / CentOS 测试后再用于长期环境
 
@@ -16,7 +16,7 @@ SS2022 + ShadowTLS v3 一体化管理脚本，适用于 Debian / Ubuntu / CentOS
 4. **安装/启用完成直接显示完整文字链接**：只在终端输出推荐 ss:// / SS+ShadowTLS 合并链接，无需再去其它菜单，亦不渲染图像、不保存任何文件
 5. **支持 IPv4 / IPv6 / 双栈**：URI 自动加 `[ ]`、`[::]:port` 监听拼接精确
 6. **支持 sing-box / mihomo / Clash Meta / Shadowrocket / Surge 客户端配置输出**
-7. **支持时间同步检查和校准**：按发行版自动选择 `systemd-timesyncd` / `chronyd` / `chrony`；`install.sh` bootstrap 阶段可提示安装 chrony，主菜单内只使用已有 NTP 服务
+7. **支持时间同步检查和校准**：按发行版自动选择 `systemd-timesyncd` / `chronyd` / `chrony`；`install.sh` bootstrap 阶段只检查 NTP 服务并提示手动安装 chrony，主菜单内只使用已有 NTP 服务
 8. **统一一键检查更新**：管理脚本本体 + `shadowsocks-rust` + `shadow-tls` + 快捷命令 wrapper 一表呈现，下载后 `bash -n` 校验通过才覆盖
 9. **一键完整卸载**：严格停服 + 残留进程 TERM/KILL + 端口释放检测 + 备份到 `/root/ss2022-shadowtls-backup-<日期>/`，完成后显示详细总结
 10. **安全边界**：
@@ -45,7 +45,7 @@ bash <(curl -fsSL https://raw.githubusercontent.com/misaka-cpu/ss2022-shadowtls-
 `install.sh` 负责 bootstrap：
 1. 检查 root
 2. **自动准备主脚本运行所需的全部必需依赖**（`ca-certificates curl jq xz-utils iproute2 dnsutils` / RHEL 系为 `... xz iproute bind-utils`），并做二次检查
-3. **若系统缺少 NTP 服务**（chrony / chronyd / systemd-timesyncd 均无），提示是否安装 `chrony`（默认安装，可输入 `n` 跳过）
+3. **若系统缺少 NTP 服务**（systemd-timesyncd / chrony / chronyd 均无），只显示手动安装 `chrony` 的命令，不询问 y/N、不自动安装
 4. 下载主脚本到 `/tmp` 临时文件并执行 `bash -n` 校验
 5. 备份旧版本并安装主脚本
 6. 创建或更新本项目的 `ss2022` 快捷命令
@@ -55,7 +55,7 @@ bash <(curl -fsSL https://raw.githubusercontent.com/misaka-cpu/ss2022-shadowtls-
 >
 > 若进入菜单后仍提示缺依赖，请重新运行上面的一行安装命令让 `install.sh` 自动修复，或按提示手动安装依赖后再运行 `ss2022`。
 
-> SS2022 对系统时间较敏感。若检测到系统没有 NTP 服务，`install.sh` 会建议安装 `chrony`（默认安装，可跳过），失败也不会阻塞进入菜单。**主菜单的「网络与时间 → 自动校准时间」只使用系统已有 NTP 服务、不会执行 `apt`/`dnf`/`yum`**；若 bootstrap 阶段跳过了 chrony，可按该菜单显示的手动命令自行安装后再回菜单校准时间。
+> SS2022 对系统时间较敏感。若检测到系统没有 NTP 服务，`install.sh` 只显示手动安装 `chrony` 的命令，不询问 y/N、不执行 `apt`/`dnf`/`yum` 安装 chrony。这样可以避免新机器首次安装时 chrony 安装路径卡住或输出错乱。**主菜单的「网络与时间 → 自动校准时间」只使用系统已有 NTP 服务、不会执行 `apt`/`dnf`/`yum`**；可按提示手动安装 chrony 后再回菜单校准时间。
 
 > 仓库 Private 时 `raw.githubusercontent.com` 无法直接访问，请改用 `scp` 或 `git pull` 把 `ss2022-shadowtls-manager.sh` 同步到 `/root/`，然后 `chmod +x && /root/ss2022-shadowtls-manager.sh`。
 
@@ -93,8 +93,8 @@ ss2022
 ## 主菜单
 
 ```
-SS2022 + ShadowTLS 管理脚本 v1.0.19
-版本: v1.0.19  监听模式: dual
+SS2022 + ShadowTLS 管理脚本 v1.0.20
+版本: v1.0.20  监听模式: dual
 IPv4: x.x.x.x
 IPv6: xxxx::xxxx
 SS2022: 已安装 / 运行中  端口: 18388  模式: tcp_only
@@ -191,7 +191,8 @@ ShadowTLS: 已启用 / 运行中  端口: 8443  伪装: www.bing.com
 - **v1.0.16**：将依赖自动安装移动到 `install.sh` bootstrap 阶段并做二次检查；主脚本菜单内不再执行 `apt`/`dnf`/`yum`，缺依赖时只显示当前系统对应修复命令并停止安装；彻底避免 apt/dpkg 输出与菜单提示混在一起，保持主安装流程干净稳定
 - **v1.0.17**：主菜单内彻底取消 chrony 自动安装，「网络与时间 → 自动校准时间」只使用系统已有 NTP 服务、缺失时只显示手动安装命令并返回菜单；chrony 的可选安装移至 `install.sh` bootstrap 阶段（检测无 NTP 服务时询问，默认安装、可跳过、失败不阻塞进入菜单）
 - **v1.0.18**：简化 `install.sh` bootstrap 阶段终端输出；依赖和 chrony 日志路径改为单独块状显示；避免新机器一行安装时长中文提示在 SSH 终端横向错位；进入主菜单前增加清晰分隔
-- **v1.0.19**（当前）：紧急修复主菜单和子菜单在 SSH 终端中的错乱显示；菜单输出改为固定左对齐文本；移除菜单区域的清屏、颜色状态词、动态宽度和补空格排版；避免中文宽度导致菜单错位；功能逻辑不变
+- **v1.0.19**：紧急修复主菜单和子菜单在 SSH 终端中的错乱显示；菜单输出改为固定左对齐文本；移除菜单区域的清屏、颜色状态词、动态宽度和补空格排版；避免中文宽度导致菜单错位；功能逻辑不变
+- **v1.0.20**（当前）：`install.sh` 取消 chrony 交互安装；无 NTP 服务时仅提示手动安装命令；避免新机器首次安装时 chrony 路径导致输出错乱；bootstrap 只负责主脚本必需依赖
 - **v1.0.x**：仅修复缺陷，不引入 breaking change
 
 ## 贡献 / 反馈

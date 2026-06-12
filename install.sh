@@ -21,7 +21,7 @@
 set -o pipefail
 umask 077
 
-readonly INSTALLER_VERSION="v1.0.19"
+readonly INSTALLER_VERSION="v1.0.20"
 readonly SCRIPT_URL="https://raw.githubusercontent.com/misaka-cpu/ss2022-shadowtls-manager/main/ss2022-shadowtls-manager.sh"
 readonly INSTALL_PATH="/root/ss2022-shadowtls-manager.sh"
 readonly SHORTCUT_PATH="/usr/local/bin/ss2022"
@@ -210,17 +210,16 @@ EOF
 ensure_bootstrap_deps
 
 # -----------------------------------------------------------------------------
-# 2.5 可选：NTP 服务（chrony）准备
+# 2.5 可选：NTP 服务检查
 #     SS2022 对系统时间较敏感，时间偏差过大可能导致 invalid timestamp。
-#     仅在缺少 NTP 服务时询问是否安装 chrony（默认 Yes）；
-#     chrony 不是主脚本运行必需依赖，安装失败不阻塞进入主菜单。
-#     不安装 qrencode，不设置 BBR，不修改防火墙 / nftables。
+#     chrony 不是主脚本运行必需依赖，install.sh 只提示手动命令。
+#     不询问 y/N，不安装 chrony，不安装 qrencode，不设置 BBR，不修改防火墙 / nftables。
 # -----------------------------------------------------------------------------
-# 检测系统已有的 NTP 守护服务，命中则输出 unit 名（chrony / chronyd / systemd-timesyncd）
+# 检测系统已有的 NTP 守护服务，命中则输出 unit 名。
 detect_ntp_unit() {
     local unit
     have_cmd systemctl || return 0
-    for unit in chrony.service chronyd.service systemd-timesyncd.service; do
+    for unit in systemd-timesyncd.service chrony.service chronyd.service; do
         if systemctl list-unit-files "${unit}" 2>/dev/null | grep -q "^${unit}"; then
             printf '%s' "${unit}"
             return 0
@@ -231,8 +230,7 @@ detect_ntp_unit() {
 
 print_chrony_manual_commands() {
     cat <<'EOF'
-
-请手动安装 chrony：
+建议稍后手动安装 chrony:
 
 Debian/Ubuntu:
   apt-get update
@@ -242,25 +240,24 @@ Debian/Ubuntu:
 CentOS/RHEL:
   dnf install -y chrony
   systemctl enable --now chronyd
+
+进入菜单后也可以在:
+  网络与时间 -> 自动校准时间
+
+查看时间状态和手动提示。
 EOF
 }
 
-# 缺少 NTP 服务时询问安装 chrony（默认 Yes）；安装失败仅警告并继续。
+# 缺少 NTP 服务时只显示手动安装提示，不阻塞进入菜单。
 ensure_ntp_service() {
     print_stage "2/4" "检查时间同步"
 
     local unit
     unit="$(detect_ntp_unit)"
     if [[ -n "${unit}" ]]; then
-        printf '已检测到 NTP 服务：\n'
+        printf '已检测到 NTP 服务:\n'
         printf '  %s\n\n' "${unit}"
         return 0
-    fi
-
-    local mgr=""
-    if   have_cmd apt-get; then mgr=apt-get
-    elif have_cmd dnf;     then mgr=dnf
-    elif have_cmd yum;     then mgr=yum
     fi
 
     cat <<'EOF'
@@ -269,70 +266,8 @@ ensure_ntp_service() {
 SS2022 对系统时间较敏感。
 时间偏差过大可能导致 invalid timestamp。
 
-建议安装 chrony。
 EOF
-
-    if [[ -z "${mgr}" ]]; then
-        printf '\n未找到 apt-get / dnf / yum。\n' >&2
-        printf '无法自动安装 chrony。\n' >&2
-        print_chrony_manual_commands >&2
-        printf '\n继续进入菜单。\n\n'
-        return 0
-    fi
-
-    local ans
-    printf '现在安装 chrony? [Y/n]: '
-    read -r ans
-    if [[ "${ans}" =~ ^[Nn]$ ]]; then
-        cat <<'EOF'
-
-已跳过 chrony 安装。
-稍后可在 ss2022 菜单中查看手动命令。
-
-EOF
-        return 0
-    fi
-
-    local chrony_log="/tmp/ss2022-bootstrap-chrony-install.$$.log"
-    if ! : > "${chrony_log}"; then
-        printf '\n无法创建 chrony 安装日志。\n' >&2
-        printf '已跳过 chrony 安装。\n' >&2
-        printf '  %s\n' "${chrony_log}" >&2
-        return 0
-    fi
-    printf '\n正在安装 chrony...\n'
-    print_log_path "${chrony_log}"
-    printf '\n'
-
-    case "${mgr}" in
-        apt-get)
-            DEBIAN_FRONTEND=noninteractive run_with_timeout 60  apt-get update >> "${chrony_log}" 2>&1 || true
-            DEBIAN_FRONTEND=noninteractive run_with_timeout 120 apt-get install -y chrony >> "${chrony_log}" 2>&1 || true
-            run_with_timeout 30 systemctl enable --now chrony >> "${chrony_log}" 2>&1 || true
-            ;;
-        dnf)
-            run_with_timeout 120 dnf install -y chrony >> "${chrony_log}" 2>&1 || true
-            run_with_timeout 30 systemctl enable --now chronyd >> "${chrony_log}" 2>&1 || true
-            ;;
-        yum)
-            run_with_timeout 120 yum install -y chrony >> "${chrony_log}" 2>&1 || true
-            run_with_timeout 30 systemctl enable --now chronyd >> "${chrony_log}" 2>&1 || true
-            ;;
-    esac
-
-    # 二次检测：以 NTP 服务是否存在为准，不因 apt/dnf/systemctl 返回码异常就报失败
-    unit="$(detect_ntp_unit)"
-    if [[ -n "${unit}" ]]; then
-        printf '已检测到 NTP 服务：\n'
-        printf '  %s\n\n' "${unit}"
-        return 0
-    fi
-
-    cat <<'EOF'
-未检测到可用 NTP 服务。
-这不会影响进入 ss2022 菜单。
-EOF
-    print_tail_block "${chrony_log}"
+    print_chrony_manual_commands
     printf '\n'
     return 0
 }

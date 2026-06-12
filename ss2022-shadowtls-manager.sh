@@ -18,10 +18,10 @@ umask 077
 # 常量与路径定义（仅允许操作以下路径）
 # -----------------------------------------------------------------------------
 # 项目唯一版本常量；远程升级时从该常量提取版本号
-readonly MANAGER_VERSION="v1.0.19"
+readonly MANAGER_VERSION="v1.0.20"
 # 别名：兼容仍在 v0.1.5 及更早版本的客户端进行远程版本探测（它们 grep SCRIPT_VERSION）
 # 必须使用字面量字符串而非 "${MANAGER_VERSION}"，否则旧版客户端 grep + sed 提取到的是字面 ${MANAGER_VERSION}
-readonly SCRIPT_VERSION="v1.0.19"
+readonly SCRIPT_VERSION="v1.0.20"
 
 # 菜单返回码约定（v0.1.5）：
 #   - 普通返回（默认 0 / 非 10）：调用方按既有规则处理 press_any_key
@@ -3250,9 +3250,9 @@ EOF
     fi
 }
 
-# 主菜单内不再自动安装 chrony：「自动校准时间」仅使用系统已有 NTP 服务。
+# 主菜单内不自动安装 chrony：「自动校准时间」仅使用系统已有 NTP 服务。
 # 缺少 NTP 服务时只显示手动安装命令并返回菜单，不询问 y/N、不执行 apt/dnf/yum、不写日志。
-# chrony 的自动安装已移至 install.sh bootstrap 阶段（新机器一行安装时按需准备）。
+# install.sh bootstrap 阶段同样只提示手动命令，不自动安装 chrony。
 print_missing_ntp_service_hint() {
     cat <<'EOF'
 

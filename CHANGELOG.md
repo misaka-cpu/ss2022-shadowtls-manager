@@ -8,6 +8,14 @@
 
 （暂无）
 
+## [v1.0.20] — 取消 install.sh chrony 交互安装
+
+### Changed
+- install.sh 取消 chrony 交互安装。
+- 无 NTP 服务时仅提示手动安装命令。
+- 避免新机器首次安装时 chrony 路径导致输出错乱。
+- bootstrap 只负责主脚本必需依赖。
+
 ## [v1.0.19] — 紧急修复菜单显示错乱
 
 ### Changed
