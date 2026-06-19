@@ -6,7 +6,8 @@
 
 ## [Unreleased]
 
-（暂无）
+### Fixed
+- install.sh 在依赖安装前保存控制终端状态，并在包管理器返回后恢复，避免 `ONLCR` 被关闭导致后续文本逐行向右错位。
 
 ## [v1.0.20] — 取消 install.sh chrony 交互安装
 
