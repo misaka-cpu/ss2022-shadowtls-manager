@@ -63,6 +63,19 @@ run_with_timeout() {
     if have_cmd timeout; then timeout "${secs}" "$@"; else "$@"; fi
 }
 
+# 部分包管理器或其子进程可能改动控制终端的输出模式。
+# 保存安装前状态，并在依赖安装后恢复，避免后续输出逐行向右错位。
+BOOTSTRAP_TTY_STATE=""
+capture_terminal_state() {
+    have_cmd stty || return 0
+    BOOTSTRAP_TTY_STATE="$(stty -g 2>/dev/null </dev/tty)" || BOOTSTRAP_TTY_STATE=""
+}
+
+restore_terminal_state() {
+    [[ -n "${BOOTSTRAP_TTY_STATE}" ]] || return 0
+    stty "${BOOTSTRAP_TTY_STATE}" 2>/dev/null </dev/tty || true
+}
+
 # -----------------------------------------------------------------------------
 # 1. root 检查
 # -----------------------------------------------------------------------------
@@ -78,6 +91,7 @@ EOF
     exit 1
 fi
 
+capture_terminal_state
 print_title
 
 # -----------------------------------------------------------------------------
@@ -178,6 +192,7 @@ ensure_bootstrap_deps() {
             run_with_timeout 120 yum install -y ca-certificates curl jq xz iproute bind-utils >> "${dep_log}" 2>&1 || rc=$?
             ;;
     esac
+    restore_terminal_state
 
     # 二次检查：以命令是否真的存在作为最终判定（覆盖 install 报 0 但部分包未装等情况）
     missing="$(required_cmds_missing)"
@@ -389,4 +404,5 @@ cat <<'EOF'
 EOF
 sleep 1
 # tmp_path 由 EXIT trap 清理；exec 后本脚本结束
+restore_terminal_state
 exec "${INSTALL_PATH}"
