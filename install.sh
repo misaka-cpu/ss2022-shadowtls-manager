@@ -58,9 +58,29 @@ print_tail_block() {
 }
 
 have_cmd() { command -v "$1" >/dev/null 2>&1; }
-run_with_timeout() {
-    local secs="$1"; shift
-    if have_cmd timeout; then timeout "${secs}" "$@"; else "$@"; fi
+run_logged_with_timeout() {
+    local secs="$1" log_path="$2"; shift 2
+    local heartbeat_pid rc=0
+
+    (
+        local elapsed=10
+        while (( elapsed < secs )); do
+            sleep 10
+            printf '  仍在处理（已等待 %s 秒）...\n' "${elapsed}"
+            elapsed=$((elapsed + 10))
+        done
+    ) &
+    heartbeat_pid=$!
+
+    if have_cmd timeout; then
+        { timeout --kill-after=5 "${secs}" "$@"; } >> "${log_path}" 2>&1 || rc=$?
+    else
+        { "$@"; } >> "${log_path}" 2>&1 || rc=$?
+    fi
+
+    kill "${heartbeat_pid}" 2>/dev/null || true
+    wait "${heartbeat_pid}" 2>/dev/null || true
+    return "${rc}"
 }
 
 # 部分包管理器或其子进程可能改动控制终端的输出模式。
@@ -180,18 +200,25 @@ ensure_bootstrap_deps() {
     local rc=0 update_rc=0
     case "${mgr}" in
         apt-get)
-            DEBIAN_FRONTEND=noninteractive run_with_timeout 60  apt-get update >> "${dep_log}" 2>&1 || update_rc=$?
-            DEBIAN_FRONTEND=noninteractive run_with_timeout 120 apt-get install -y ca-certificates curl jq xz-utils iproute2 dnsutils >> "${dep_log}" 2>&1 || rc=$?
+            printf '正在刷新软件源（最多 30 秒）...\n'
+            run_logged_with_timeout 30 "${dep_log}" env DEBIAN_FRONTEND=noninteractive apt-get update || update_rc=$?
+            printf '正在安装依赖（最多 90 秒）...\n'
+            run_logged_with_timeout 90 "${dep_log}" env DEBIAN_FRONTEND=noninteractive apt-get install -y ca-certificates curl jq xz-utils iproute2 dnsutils || rc=$?
             ;;
         dnf)
-            run_with_timeout 60  dnf makecache -y >> "${dep_log}" 2>&1 || update_rc=$?
-            run_with_timeout 120 dnf install -y ca-certificates curl jq xz iproute bind-utils >> "${dep_log}" 2>&1 || rc=$?
+            printf '正在刷新软件源（最多 30 秒）...\n'
+            run_logged_with_timeout 30 "${dep_log}" dnf makecache -y || update_rc=$?
+            printf '正在安装依赖（最多 90 秒）...\n'
+            run_logged_with_timeout 90 "${dep_log}" dnf install -y ca-certificates curl jq xz iproute bind-utils || rc=$?
             ;;
         yum)
-            run_with_timeout 60  yum makecache    >> "${dep_log}" 2>&1 || update_rc=$?
-            run_with_timeout 120 yum install -y ca-certificates curl jq xz iproute bind-utils >> "${dep_log}" 2>&1 || rc=$?
+            printf '正在刷新软件源（最多 30 秒）...\n'
+            run_logged_with_timeout 30 "${dep_log}" yum makecache || update_rc=$?
+            printf '正在安装依赖（最多 90 秒）...\n'
+            run_logged_with_timeout 90 "${dep_log}" yum install -y ca-certificates curl jq xz iproute bind-utils || rc=$?
             ;;
     esac
+    printf '\n'
     restore_terminal_state
 
     # 二次检查：以命令是否真的存在作为最终判定（覆盖 install 报 0 但部分包未装等情况）
