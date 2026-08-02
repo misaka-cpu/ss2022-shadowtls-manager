@@ -66,7 +66,7 @@ run_logged_with_timeout() {
         local elapsed=10
         while (( elapsed < secs )); do
             sleep 10
-            printf '  仍在处理（已等待 %s 秒）...\n' "${elapsed}"
+            printf '\r  仍在处理（已等待 %s 秒）...\r\n' "${elapsed}"
             elapsed=$((elapsed + 10))
         done
     ) &
@@ -80,6 +80,7 @@ run_logged_with_timeout() {
 
     kill "${heartbeat_pid}" 2>/dev/null || true
     wait "${heartbeat_pid}" 2>/dev/null || true
+    restore_terminal_state
     return "${rc}"
 }
 
