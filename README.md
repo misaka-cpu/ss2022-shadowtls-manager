@@ -18,7 +18,7 @@ SS2022 + ShadowTLS v3 一体化管理脚本，适用于 Debian / Ubuntu / CentOS
 6. **支持 sing-box / mihomo / Clash Meta / Shadowrocket / Surge 客户端配置输出**
 7. **支持时间同步检查和校准**：按发行版自动选择 `systemd-timesyncd` / `chronyd` / `chrony`；`install.sh` bootstrap 阶段只检查 NTP 服务并提示手动安装 chrony，主菜单内只使用已有 NTP 服务
 8. **统一一键检查更新**：管理脚本本体 + `shadowsocks-rust` + `shadow-tls` + 快捷命令 wrapper 一表呈现，下载后 `bash -n` 校验通过才覆盖
-9. **一键完整卸载**：严格停服 + 残留进程 TERM/KILL + 端口释放检测 + 备份到 `/root/ss2022-shadowtls-backup-<日期>/`，完成后显示详细总结
+9. **一键完整卸载**：严格停服 + 残留进程 TERM/KILL + 端口释放检测，删除项目配置且不备份；卸载前需自行保存节点信息，完成后显示详细总结
 10. **安全边界**：
     - **不执行** `nft flush ruleset` / `nft -f` / `nft delete`
     - **不修改** `/etc/nftables.conf`
@@ -34,15 +34,28 @@ SS2022 + ShadowTLS v3 一体化管理脚本，适用于 Debian / Ubuntu / CentOS
 - CentOS / RHEL / Rocky / AlmaLinux 9 系列
 - 架构：amd64 / arm64
 
+从 **v1.0.21** 起，shadowsocks-rust 使用上游 `x86_64-unknown-linux-musl` / `aarch64-unknown-linux-musl` 静态发布包，避免 GNU 包因系统 glibc 版本较旧而无法启动。下载后先运行 `ssserver --version` 验证可运行性，通过后才安装；无需手动升级系统 glibc。
+
 > v1.0.x 已在 Debian 12、Ubuntu 24.04、CentOS 9 上实测；其它发行版/版本组合可能仍有差异，遇到问题请提 Issue 并附带 `lsb_release -a` 或 `cat /etc/os-release`，以及 `journalctl -u ss2022 -n 80 --no-pager`。
 
 ## 一行安装
+
+在 VPS 上以 **root** 身份执行：
 
 ```bash
 bash <(curl -fsSL https://raw.githubusercontent.com/misaka-cpu/ss2022-shadowtls-manager/main/install.sh)
 ```
 
+这条命令从 **main 主分支**下载安装器和管理脚本。修复只有合并到 main 后才会通过此命令生效。
+
+进入菜单后，选择 `1) 一键安装 / 重装`，按提示配置端口、密码和转发模式。针对 glibc 兼容性问题，应确认管理脚本为 **v1.0.21 或更新版本**，下载文件名包含 `unknown-linux-musl.tar.xz`。
+
+**已执行一键完整卸载：** 重新运行上面的命令，按全新安装流程配置即可。完整卸载不会保留或自动恢复原端口、密码等配置；安装完成后，按新节点信息更新客户端。
+
+**仍保留安装但遇到 `GLIBC_2.38` / `GLIBC_2.39 not found`：** 先运行上面的命令加载新版管理脚本，再选择 `7) 一键检查更新`。当 shadowsocks-rust 显示 `需修复（ssserver 无法运行）` 时，确认执行更新，即使版本号相同也会重新下载可运行的程序，保留现有端口、密码和配置。
+
 `install.sh` 负责 bootstrap：
+
 1. 检查 root
 2. **自动准备主脚本运行所需的全部必需依赖**（`ca-certificates curl jq xz-utils iproute2 dnsutils` / RHEL 系为 `... xz iproute bind-utils`），并做二次检查
 3. **若系统缺少 NTP 服务**（systemd-timesyncd / chrony / chronyd 均无），只显示手动安装 `chrony` 的命令，不询问 y/N、不自动安装
@@ -122,6 +135,7 @@ ShadowTLS: 已启用 / 运行中  端口: 8443  伪装: www.bing.com
 - 同时检查 4 个组件：管理脚本本体、`shadowsocks-rust`、`shadow-tls`、`/usr/local/bin/ss2022` 快捷命令
 - 仅列状态表，**用户确认 `y` 后才应用更新**
 - 管理脚本更新前会备份当前版本，下载后 `bash -n` 校验通过才覆盖
+- shadowsocks-rust 会检查已有程序能否运行；无法运行时显示 `需修复（ssserver 无法运行）`，确认后支持同版本修复并保留配置
 - 二进制更新失败会自动从备份回滚到旧版本并校验服务恢复运行
 - 仓库 Private 导致 raw 下载失败时，提示用 `scp` 或 `git pull` 手动更新，不报硬错
 
@@ -129,13 +143,17 @@ ShadowTLS: 已启用 / 运行中  端口: 8443  伪装: www.bing.com
 
 主菜单 → `8) 一键完整卸载`，输入 `YES` 二次确认。
 
+**完整卸载不备份配置，且会删除项目内已有的 `backup` 目录。** 请提前将需保留的配置或节点信息另存到项目目录之外。
+
 **会做**：
-- 自动备份当前配置到 `/root/ss2022-shadowtls-backup-<日期>/`
+
+- 直接删除本项目配置、状态文件及项目内备份
 - 严格停服：`disable --now` 两个 unit → `daemon-reload` → `reset-failed` → 残留进程 TERM 2s 后 KILL
 - 删除项目自有文件（含 `/usr/local/bin/ss2022` wrapper，前提是包含 `managed by ss2022-shadowtls-manager` 标记）
 - 报告每个端口的释放状态；仍占用时区分"本项目残留"与"非本项目进程"，并附占用进程明细
 
 **不会做**：
+
 - 不动 nftables 规则与 `/etc/nftables.conf`
 - 不动 `nftables-nat-rust-enhanced` 项目
 - 不卸载 apt 包（curl / jq / chrony / wget 全部保留）
@@ -162,7 +180,8 @@ ShadowTLS: 已启用 / 运行中  端口: 8443  伪装: www.bing.com
 |---|---|
 | 一键完整卸载后端口仍被占用 | 卸载总结会区分"本项目残留"与"非本项目进程"，本项目残留会自动 TERM/KILL；非本项目进程请按列出的 `pid` / 进程名自行处理 |
 | 重新安装同端口提示被占用 | 安装时若占用者是本项目残留进程，菜单会提示并询问是否清理；若是其它进程，请输入其它端口 |
-| `ssserver` 启动失败 | `journalctl -u ss2022 -n 80 --no-pager`；多为端口占用或 PSK 长度与方法不匹配 |
+| `GLIBC_2.38` / `GLIBC_2.39 not found` | GNU 二进制与系统 glibc 不兼容；按「一行安装」中的说明加载 v1.0.21 或更新管理脚本，再安装或执行同版本修复，使用 musl 包 |
+| `ssserver` 其它启动失败 | `journalctl -u ss2022 -n 80 --no-pager`；根据具体错误检查二进制可运行性、端口占用、配置和 PSK 长度 |
 | `shadow-tls` 启动失败 | 检查 `/etc/shadowtls/config.env` 中 `SERVER_ADDR` 是否指向 SS2022 本机端口；`shadow-tls --help` 验证二进制 |
 | IPv6 不通 | 确认 VPS 是否分配 IPv6；`cat /proc/sys/net/ipv6/bindv6only`；客户端网络是否双栈 |
 | 合并链接导入失败 | 主菜单「查看节点信息」中确认后查看 sing-box / mihomo 配置模板 |
