@@ -18,10 +18,10 @@ umask 077
 # 常量与路径定义（仅允许操作以下路径）
 # -----------------------------------------------------------------------------
 # 项目唯一版本常量；远程升级时从该常量提取版本号
-readonly MANAGER_VERSION="v1.0.20"
+readonly MANAGER_VERSION="v1.0.21"
 # 别名：兼容仍在 v0.1.5 及更早版本的客户端进行远程版本探测（它们 grep SCRIPT_VERSION）
 # 必须使用字面量字符串而非 "${MANAGER_VERSION}"，否则旧版客户端 grep + sed 提取到的是字面 ${MANAGER_VERSION}
-readonly SCRIPT_VERSION="v1.0.20"
+readonly SCRIPT_VERSION="v1.0.21"
 
 # 菜单返回码约定（v0.1.5）：
 #   - 普通返回（默认 0 / 非 10）：调用方按既有规则处理 press_any_key
@@ -175,11 +175,11 @@ detect_arch() {
     arch="$(uname -m)"
     case "${arch}" in
         x86_64|amd64)
-            ARCH_RUST="x86_64-unknown-linux-gnu"
+            ARCH_RUST="x86_64-unknown-linux-musl"
             ARCH_STLS="x86_64-unknown-linux-musl"
             ;;
         aarch64|arm64)
-            ARCH_RUST="aarch64-unknown-linux-gnu"
+            ARCH_RUST="aarch64-unknown-linux-musl"
             ARCH_STLS="aarch64-unknown-linux-musl"
             ;;
         *)
@@ -741,7 +741,12 @@ github_latest_tag() {
     return 1
 }
 
-# 下载 shadowsocks-rust 二进制
+# 检查动态库、架构等是否允许 ssserver 运行，不能只检查可执行权限。
+ssserver_usable() {
+    [[ -x "${SS_BINARY}" ]] && "${SS_BINARY}" --version >/dev/null 2>&1
+}
+
+# 下载 musl 静态版，避免 GNU 发布包要求比目标系统更新的 glibc。
 download_shadowsocks_rust() {
     local version="$1"
     [[ -z "${version}" ]] && version="$(github_latest_tag "${SS_RUST_REPO}")"
@@ -774,7 +779,18 @@ download_shadowsocks_rust() {
         safe_remove_tmpdir "${tmpdir}"
         return 1
     fi
-    install -m 0755 "${tmpdir}/ssserver" "${SS_BINARY}"
+    local version_output
+    if ! version_output="$("${tmpdir}/ssserver" --version 2>&1)"; then
+        log_error "下载的 ssserver 无法在当前系统运行，未替换已有二进制"
+        printf '%s\n' "${version_output}"
+        safe_remove_tmpdir "${tmpdir}"
+        return 1
+    fi
+    if ! install -m 0755 "${tmpdir}/ssserver" "${SS_BINARY}"; then
+        log_error "写入 ssserver 失败：${SS_BINARY}"
+        safe_remove_tmpdir "${tmpdir}"
+        return 1
+    fi
     safe_remove_tmpdir "${tmpdir}"
     log_ok "已安装：${SS_BINARY}"
     info_set ".ss2022.binary_version" "\"${version}\""
@@ -1292,7 +1308,8 @@ install_ss2022() {
     info_set ".ss2022.mode"        "\"${mode}\""
 
     # 下载二进制
-    if [[ ! -x "${SS_BINARY}" ]]; then
+    if ! ssserver_usable; then
+        [[ -e "${SS_BINARY}" ]] && log_warn "已有 ssserver 无法运行，将重新下载兼容的 musl 版本"
         download_shadowsocks_rust "" || { log_error "ssserver 安装失败"; return 1; }
     else
         log_info "ssserver 已存在，跳过下载（可通过主菜单「一键检查更新」更新）"
@@ -3464,7 +3481,7 @@ update_shadowsocks_rust() {
         log_warn "无法检测最新版本，可能是 GitHub API 限流或网络问题。"
         return 1
     fi
-    if [[ -n "${cur}" && "${cur}" == "${latest}" ]]; then
+    if [[ -n "${cur}" && "${cur}" == "${latest}" ]] && ssserver_usable; then
         log_ok "已是最新，无需更新"
         return
     fi
@@ -3813,6 +3830,8 @@ check_and_update_all() {
     ss_latest="$(github_latest_tag "${SS_RUST_REPO}" 2>/dev/null || true)"
     if [[ -z "${ss_latest}" ]]; then
         ss_state="无法检测"
+    elif [[ -e "${SS_BINARY}" ]] && ! ssserver_usable; then
+        ss_state="需修复（ssserver 无法运行）"
     elif [[ "${ss_cur}" == "${ss_latest}" ]]; then
         ss_state="已最新"
     elif [[ "${ss_cur}" == "未知" ]]; then
@@ -3882,7 +3901,7 @@ EOF
     # 汇总可用更新（路径异常时仅警告，不计入可执行更新）
     local has_update=0
     [[ "${mgr_state}"  == "可更新" ]] && has_update=1
-    [[ "${ss_state}"   == "可更新" ]] && has_update=1
+    [[ "${ss_state}" == "可更新" || "${ss_state}" == "需修复（ssserver 无法运行）" ]] && has_update=1
     [[ "${stls_state}" == "可更新" ]] && has_update=1
     [[ "${sc_state}"   == "缺失（建议修复）" ]] && has_update=1
     if [[ "${mgr_state}" == "路径异常（无法识别真实主脚本）" ]]; then
@@ -3902,7 +3921,7 @@ EOF
     if [[ "${mgr_state}" == "可更新" ]]; then
         update_manager_script || log_warn "管理脚本更新失败（继续后续更新）"
     fi
-    if [[ "${ss_state}" == "可更新" ]]; then
+    if [[ "${ss_state}" == "可更新" || "${ss_state}" == "需修复（ssserver 无法运行）" ]]; then
         update_shadowsocks_rust || log_warn "shadowsocks-rust 更新失败"
     fi
     if [[ "${stls_state}" == "可更新" ]]; then

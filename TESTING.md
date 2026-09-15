@@ -17,6 +17,9 @@
 - ☐ 系统语言不影响菜单（菜单和提示均中文，不会因 locale 异常出乱码）
 - ☐ `bash -n ss2022-shadowtls-manager.sh` 通过
 - ☐ `bash -n install.sh` 通过
+- ☐ `bash tests/test-ssserver-compat.sh` 通过（模拟包与命令，不安装服务）
+- ☐ **(v1.0.21)** Debian 12 / glibc 2.36 下载 v1.25.0 的 x86_64 musl 发布包后，`ssserver --version` 成功；用回环地址启动并确认监听成功
+- ☐ **(v1.0.21)** 已有 GNU 版因缺少 GLIBC 无法启动时，重装不跳过下载；同版本一键更新显示需修复，成功后保留原端口、密钥和配置
 - ☐ 仓库根目录存在：`ss2022-shadowtls-manager.sh`、`install.sh`、`README.md`、`CHANGELOG.md`、`TESTING.md`、`.github/workflows/syntax.yml`
 
 ---
