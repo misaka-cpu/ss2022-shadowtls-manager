@@ -38,6 +38,9 @@ jobs:
       - name: ssserver compatibility regression
         run: bash tests/test-ssserver-compat.sh
 
+      - name: firewall notice regression
+        run: bash tests/test-firewall-notice.sh
+
       # 软性 shellcheck —— 输出供阅读，不阻断 CI
       - name: shellcheck (informational only, never fails the build)
         continue-on-error: true

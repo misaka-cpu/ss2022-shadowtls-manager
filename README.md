@@ -4,7 +4,7 @@ SS2022 + ShadowTLS v3 一体化管理脚本，适用于 Debian / Ubuntu / CentOS
 
 ## 当前状态
 
-- 当前版本：**v1.0.21**
+- 当前版本：**v1.0.22**
 - 状态：**稳定版**
 - 已在 Debian / Ubuntu / CentOS 9 上经过实测；仍建议先在干净 Debian / Ubuntu / CentOS 测试后再用于长期环境
 
@@ -22,7 +22,7 @@ SS2022 + ShadowTLS v3 一体化管理脚本，适用于 Debian / Ubuntu / CentOS
 10. **安全边界**：
     - **不执行** `nft flush ruleset` / `nft -f` / `nft delete`
     - **不修改** `/etc/nftables.conf`
-    - **不自动修改**现有 nftables 规则（检测到 nftables 时只打印建议命令）
+    - **不自动修改**现有 nftables 规则（仅提示检查端口，不输出未经验证的规则命令）
     - **不修改** `nftables-nat-rust-enhanced` 项目
     - **不删除** `/usr/local/sbin/` 下任何非本项目文件
     - 删除任何项目内文件前均显示路径，整盘删除需用户输入 `YES` 二次确认
@@ -106,8 +106,8 @@ ss2022
 ## 主菜单
 
 ```
-SS2022 + ShadowTLS 管理脚本 v1.0.21
-版本: v1.0.21  监听模式: dual
+SS2022 + ShadowTLS 管理脚本 v1.0.22
+版本: v1.0.22  监听模式: dual
 IPv4: x.x.x.x
 IPv6: xxxx::xxxx
 SS2022: 已安装 / 运行中  端口: 18388  模式: tcp_only
@@ -172,7 +172,7 @@ ShadowTLS: 已启用 / 运行中  端口: 8443  伪装: www.bing.com
 | 覆盖 `/usr/local/sbin/` 下非本项目文件 | **禁止** |
 | 宽泛 `rm -rf` | **禁止**；所有 `rm` 走路径白名单 / 标记校验 / 项目常量比对 |
 
-防火墙检测：识别到 `nftables` 时仅打印参考命令，绝不修改规则。`ufw` / `firewalld` 也**不会自动放行**——v1.0.3 起 `open_firewall_port` 会先输出手动命令并询问 `[y/N]` 默认 No；只有在用户明确输入 `y` 时才执行对应 `ufw allow` / `firewall-cmd --add-port`。安装流程默认零防火墙改动。
+防火墙检测：检测到 `nft` 命令时，仅显示普通信息提示，说明未检查或修改现有规则；这不代表端口已被拦截，也不判断规则由哪个项目管理。TCP+UDP 模式合并提示一次，不再输出假定表名和链名的 `nft add rule` 示例。`ufw` / `firewalld` 仍先输出手动命令并逐协议询问 `[y/N]`，只有在用户明确输入 `y` 时才执行对应命令。安装流程默认零防火墙改动。
 
 ## 常见问题
 
@@ -212,7 +212,8 @@ ShadowTLS: 已启用 / 运行中  端口: 8443  伪装: www.bing.com
 - **v1.0.18**：简化 `install.sh` bootstrap 阶段终端输出；依赖和 chrony 日志路径改为单独块状显示；避免新机器一行安装时长中文提示在 SSH 终端横向错位；进入主菜单前增加清晰分隔
 - **v1.0.19**：紧急修复主菜单和子菜单在 SSH 终端中的错乱显示；菜单输出改为固定左对齐文本；移除菜单区域的清屏、颜色状态词、动态宽度和补空格排版；避免中文宽度导致菜单错位；功能逻辑不变
 - **v1.0.20**：`install.sh` 取消 chrony 交互安装；无 NTP 服务时仅提示手动安装命令；避免新机器首次安装时 chrony 路径导致输出错乱；bootstrap 只负责主脚本必需依赖
-- **v1.0.21**（当前）：改用 musl 静态版 ssserver，安装前验证二进制能否运行；重装及一键更新可修复同版本的 glibc 不兼容二进制。
+- **v1.0.21**：改用 musl 静态版 ssserver，安装前验证二进制能否运行；重装及一键更新可修复同版本的 glibc 不兼容二进制。
+- **v1.0.22**（当前）：nftables 改为普通信息提示，移除未经检测的管理项目名称及固定表/链的示例命令；TCP+UDP 合并提示，保留 ufw/firewalld 的逐协议确认流程。
 - **v1.0.x**：仅修复缺陷，不引入 breaking change
 
 ## 贡献 / 反馈

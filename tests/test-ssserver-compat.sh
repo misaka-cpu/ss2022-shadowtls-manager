@@ -90,12 +90,13 @@ generate_ss2022_password() { echo AAAAAAAAAAAAAAAAAAAAAA==; }
 set_listen_mode_interactive() { :; }
 write_ss2022_config() { :; }
 write_ss2022_service() { :; }
-open_firewall_port() { :; }
+open_firewall_port() { printf '%s\n' "$*" >> "$test_root/firewall-calls"; }
 restart_service() { printf '%s\n' "$1" >> "$test_root/restarts"; }
 refresh_public_ips() { :; }
 shortcut_installed() { return 0; }
 show_install_result_full() { :; }
 install_ss2022 <<< $'y\n1\n44336\ny\n1' > "$test_root/log" 2>&1
+[[ "$(cat "$test_root/firewall-calls")" == '44336 tcp_and_udp' ]]
 ssserver_usable
 grep -q '重新下载' "$test_root/log"
 grep -q '.ss2022.binary_version "v1.25.0"' "$test_root/state-writes"

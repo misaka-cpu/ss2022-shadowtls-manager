@@ -18,10 +18,10 @@ umask 077
 # 常量与路径定义（仅允许操作以下路径）
 # -----------------------------------------------------------------------------
 # 项目唯一版本常量；远程升级时从该常量提取版本号
-readonly MANAGER_VERSION="v1.0.21"
+readonly MANAGER_VERSION="v1.0.22"
 # 别名：兼容仍在 v0.1.5 及更早版本的客户端进行远程版本探测（它们 grep SCRIPT_VERSION）
 # 必须使用字面量字符串而非 "${MANAGER_VERSION}"，否则旧版客户端 grep + sed 提取到的是字面 ${MANAGER_VERSION}
-readonly SCRIPT_VERSION="v1.0.21"
+readonly SCRIPT_VERSION="v1.0.22"
 
 # 菜单返回码约定（v0.1.5）：
 #   - 普通返回（默认 0 / 非 10）：调用方按既有规则处理 press_any_key
@@ -1135,6 +1135,12 @@ open_firewall_port() {
     local port="$1" proto="${2:-tcp}"
     local fw ans
     fw="$(detect_firewall)"
+    # nftables 合并展示 TCP/UDP；其它防火墙保留逐协议确认流程。
+    if [[ "${proto}" == "tcp_and_udp" && "${fw}" != nftables* ]]; then
+        open_firewall_port "${port}" tcp
+        open_firewall_port "${port}" udp
+        return
+    fi
     case "${fw}" in
         ufw)
             log_info "检测到 ufw。本脚本默认不会自动修改防火墙规则。"
@@ -1165,9 +1171,9 @@ open_firewall_port() {
             fi
             ;;
         nftables|nftables-present)
-            log_warn "检测到 nftables（可能由 nftables-nat-rust-enhanced 管理），本脚本不会自动修改 nftables 规则"
-            log_warn "如需放行端口 ${port}/${proto}（IPv4 与 IPv6 均需考虑），示例命令仅作参考："
-            printf '   nft add rule inet filter input %s dport %s accept\n' "${proto}" "${port}"
+            [[ "${proto}" == "tcp_and_udp" ]] && proto="tcp/udp"
+            log_info "检测到 nft 命令，未检查或修改现有防火墙规则。"
+            log_info "若客户端无法连接，请检查端口 ${port}/${proto} 的放行情况（IPv4/IPv6）。"
             ;;
         none)
             log_info "未检测到主动防火墙，端口 ${port}/${proto} 默认应可访问"
@@ -1325,7 +1331,7 @@ install_ss2022() {
         case "${mode}" in
             tcp_only)    open_firewall_port "${port}" tcp ;;
             udp_only)    open_firewall_port "${port}" udp ;;
-            tcp_and_udp) open_firewall_port "${port}" tcp; open_firewall_port "${port}" udp ;;
+            tcp_and_udp) open_firewall_port "${port}" tcp_and_udp ;;
         esac
     fi
 
@@ -2684,8 +2690,7 @@ EOF
             info_set ".ss2022.mode" "\"tcp_and_udp\""
             if [[ "${stls_enabled}" != "true" ]]; then
                 local p; p="$(info_get '.ss2022.public_port')"
-                open_firewall_port "${p}" tcp
-                open_firewall_port "${p}" udp
+                open_firewall_port "${p}" tcp_and_udp
             fi
             ;;
         *) log_error "无效选择"; return 1 ;;
