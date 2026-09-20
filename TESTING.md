@@ -18,6 +18,7 @@
 - ☐ `bash -n ss2022-shadowtls-manager.sh` 通过
 - ☐ `bash -n install.sh` 通过
 - ☐ `bash tests/test-ssserver-compat.sh` 通过（模拟包与命令，不安装服务）
+- ☐ `bash tests/test-firewall-notice.sh` 通过（模拟防火墙，不修改系统规则）
 - ☐ **(v1.0.21)** Debian 12 / glibc 2.36 下载 v1.25.0 的 x86_64 musl 发布包后，`ssserver --version` 成功；用回环地址启动并确认监听成功
 - ☐ **(v1.0.21)** 已有 GNU 版因缺少 GLIBC 无法启动时，重装不跳过下载；同版本一键更新显示需修复，成功后保留原端口、密钥和配置
 - ☐ 仓库根目录存在：`ss2022-shadowtls-manager.sh`、`install.sh`、`README.md`、`CHANGELOG.md`、`TESTING.md`、`.github/workflows/syntax.yml`
@@ -288,7 +289,8 @@
   - ☐ 安装 SS2022 时 `open_firewall_port` 先打印 `ufw allow ${port}/${proto}` 或 `firewall-cmd --permanent --add-port=...` 手动命令
   - ☐ 紧跟 `是否现在由本脚本执行该命令? [y/N]:`；直接回车 / N → 不执行任何防火墙命令，端口未自动放行
   - ☐ 仅在用户输入 Y 时才执行对应的 `ufw allow` / `firewall-cmd --add-port` + `--reload`
-  - ☐ `nftables` / `nftables-present` 情景下永远只打印参考 `nft add rule` 命令，绝不执行 nft 写操作
+  - ☐ **(v1.0.22)** `nftables` / `nftables-present` 只显示 `[信息]`，明确未检查或修改规则，不提未经检测的管理项目，不输出 `nft add rule` 示例，不执行 nft 写操作
+  - ☐ **(v1.0.22)** 安装或切换到 TCP+UDP 时只提示一次 `端口 <端口>/tcp/udp`；单协议只显示相应协议；ufw/firewalld 仍逐协议确认
   - ☐ 启用 ShadowTLS、修改 SS / STLS 端口、UDP 模式切换共享同一询问逻辑
 
 ---
@@ -305,7 +307,7 @@
 
 - ☐ README 一行安装命令可被复制粘贴运行
 - ☐ README 显示当前版本号与 SCRIPT_VERSION 常量一致
-- ☐ install.sh 包含 `readonly INSTALLER_VERSION="v1.0.20"`，并与 MANAGER_VERSION / SCRIPT_VERSION 一致
+- ☐ install.sh 包含 `readonly INSTALLER_VERSION="v1.0.22"`，并与 MANAGER_VERSION / SCRIPT_VERSION 一致
 - ☐ CHANGELOG 包含从 v0.1.0 到当前版本的条目
 - ☐ TESTING.md（本文件）与实际行为一致
 

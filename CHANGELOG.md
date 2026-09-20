@@ -6,6 +6,12 @@
 
 ## [Unreleased]
 
+## [v1.0.22] — 修正 nftables 提示
+
+### Fixed
+- 检测到 `nft` 命令时改用普通信息提示，明确未检查或修改规则；移除未经检测的管理项目名称和固定表/链的示例命令。
+- SS2022 安装及切换 TCP+UDP 模式时合并 nftables 提示，避免重复输出；ufw/firewalld 仍逐协议询问后才执行放行命令。
+
 ## [v1.0.21] — 修复 ssserver 的 glibc 兼容性
 
 ### Fixed
