@@ -4,7 +4,7 @@ set -euo pipefail
 manager="${1:-$(dirname "$0")/../ss2022-shadowtls-manager.sh}"
 test_root="$(mktemp -d -t ss2022-compat-test.XXXXXX)"
 trap 'rm -rf -- "$test_root"' EXIT
-for function_name in detect_arch safe_remove_tmpdir ssserver_usable download_shadowsocks_rust \
+for function_name in detect_arch safe_remove_tmpdir ssserver_usable download_release_asset download_shadowsocks_rust \
     install_ss2022 update_shadowsocks_rust check_and_update_all; do
     eval "$(awk -v name="$function_name" '$0 == name "() {" { printing=1 } printing { print } printing && /^}$/ { exit }' "$manager")"
 done
@@ -35,7 +35,12 @@ info_get() {
 curl() {
     [[ "$*" == *"x86_64-unknown-linux-musl.tar.xz" ]] || return 90
     [[ "${download_fail:-0}" == 0 ]] || return 22
-    cp "$test_root/package.tar.xz" "$5"
+    local output=""
+    while (( $# )); do
+        if [[ "$1" == -o ]]; then output="$2"; break; fi
+        shift
+    done
+    cp "$test_root/package.tar.xz" "$output"
 }
 install() {
     [[ "${install_fail:-0}" == 0 ]] || return 1

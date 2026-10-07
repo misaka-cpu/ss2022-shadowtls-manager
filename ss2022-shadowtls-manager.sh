@@ -18,10 +18,10 @@ umask 077
 # 常量与路径定义（仅允许操作以下路径）
 # -----------------------------------------------------------------------------
 # 项目唯一版本常量；远程升级时从该常量提取版本号
-readonly MANAGER_VERSION="v1.0.22"
+readonly MANAGER_VERSION="v1.0.23"
 # 别名：兼容仍在 v0.1.5 及更早版本的客户端进行远程版本探测（它们 grep SCRIPT_VERSION）
 # 必须使用字面量字符串而非 "${MANAGER_VERSION}"，否则旧版客户端 grep + sed 提取到的是字面 ${MANAGER_VERSION}
-readonly SCRIPT_VERSION="v1.0.22"
+readonly SCRIPT_VERSION="v1.0.23"
 
 # 菜单返回码约定（v0.1.5）：
 #   - 普通返回（默认 0 / 非 10）：调用方按既有规则处理 press_any_key
@@ -746,6 +746,36 @@ ssserver_usable() {
     [[ -x "${SS_BINARY}" ]] && "${SS_BINARY}" --version >/dev/null 2>&1
 }
 
+# 发布文件下载：同一次安装内保留部分文件重试，不跨安装保存缓存。
+download_release_asset() {
+    local url="$1" dest="$2" attempt rc http_code
+    for attempt in 1 2 3; do
+        log_info "下载尝试 ${attempt}/3（单次最多 600 秒，支持断点续传）"
+        rc=0
+        http_code="$(curl -fSL --connect-timeout 20 --max-time 600 \
+            --speed-limit 1024 --speed-time 60 --continue-at - \
+            --write-out '%{http_code}' -o "${dest}" "${url}")" || rc=$?
+        # 某些 curl 在续传收到 416 时返回成功；不能据此认定本地文件完整。
+        [[ "${http_code}" != 416 ]] || rc=33
+        [[ ${rc} -eq 0 ]] && return 0
+        case "${rc}:${http_code}" in
+            33:*)
+                # 服务端不支持 Range 或拒绝偏移；下次从头下载，避免拼接完整响应。
+                : > "${dest}" || return 1
+                log_warn "服务器无法续传，已清空部分文件。"
+                ;;
+            6:*|7:*|18:*|28:*|35:*|52:*|55:*|56:*|22:408|22:429|22:500|22:502|22:503|22:504)
+                ;;
+            *) return "${rc}" ;;
+        esac
+        if (( attempt < 3 )); then
+            log_warn "下载中断（curl=${rc}，HTTP=${http_code:-未知}），2 秒后重试。"
+            sleep 2
+        fi
+    done
+    return "${rc}"
+}
+
 # 下载 musl 静态版，避免 GNU 发布包要求比目标系统更新的 glibc。
 download_shadowsocks_rust() {
     local version="$1"
@@ -764,7 +794,7 @@ download_shadowsocks_rust() {
         return 1
     fi
     log_info "下载：${url}"
-    if ! curl -fSL --max-time 120 -o "${tmpdir}/ss.tar.xz" "${url}"; then
+    if ! download_release_asset "${url}" "${tmpdir}/ss.tar.xz"; then
         log_error "下载 shadowsocks-rust 失败"
         safe_remove_tmpdir "${tmpdir}"
         return 1
@@ -817,7 +847,7 @@ download_shadowtls() {
         return 1
     fi
     log_info "下载：${url}"
-    if ! curl -fSL --max-time 120 -o "${tmpfile}" "${url}"; then
+    if ! download_release_asset "${url}" "${tmpfile}"; then
         log_error "下载 shadow-tls 失败"
         safe_remove_tmpfile "${tmpfile}"
         return 1
@@ -2813,22 +2843,23 @@ check_time_status() {
         echo "unknown"
         return
     fi
-    local line
-    line="$(timedatectl status 2>/dev/null | grep -Ei 'System clock synchronized' || true)"
-    if [[ -z "${line}" ]]; then
-        echo "unknown"
-    elif echo "${line}" | grep -qi 'yes'; then
-        echo "synced"
-    else
-        echo "unsynced"
+    local synced
+    synced="$(timedatectl show -p NTPSynchronized --value 2>/dev/null)" || synced=""
+    if [[ "${synced}" != yes && "${synced}" != no ]]; then
+        synced="$(_timedatectl_status_value 'System clock synchronized')"
     fi
+    case "${synced}" in
+        yes) echo "synced" ;;
+        no)  echo "unsynced" ;;
+        *)   echo "unknown" ;;
+    esac
 }
 
 # 简短中文状态，用于主菜单状态栏
 time_status_label() {
     case "$(check_time_status)" in
-        synced)   printf '已同步' ;;
-        unsynced) printf '未同步' ;;
+        synced)   printf '已同步（系统报告）' ;;
+        unsynced) printf '未同步（系统报告）' ;;
         *)        printf '未检测' ;;
     esac
 }
@@ -2864,13 +2895,12 @@ _ntp_service_unit() {
 }
 
 _ntp_unit_exists() {
-    local unit svc
+    local unit svc load_state
     unit="${1%.service}"
     [[ -z "${unit}" ]] && return 1
     svc="$(_ntp_service_unit "${unit}")"
-    systemctl list-unit-files 2>/dev/null | grep -Eq "^${svc}([[:space:]]|$)" && return 0
-    systemctl cat "${svc}" >/dev/null 2>&1 && return 0
-    return 1
+    load_state="$(systemctl show --property=LoadState --value "${svc}" 2>/dev/null)" || return 1
+    [[ "${load_state}" == loaded || "${load_state}" == masked ]]
 }
 
 _ntp_unit_active() {
@@ -2891,26 +2921,38 @@ _ntp_service_state_label() {
 }
 
 _ntp_service_state() {
-    local unit svc candidates=(systemd-timesyncd chronyd chrony)
+    local unit svc s first="" candidates=(systemd-timesyncd chronyd chrony ntp ntpd ntpsec openntpd)
     if ! command -v systemctl >/dev/null 2>&1; then
         echo ""
         return
     fi
     for unit in "${candidates[@]}"; do
         if _ntp_unit_exists "${unit}"; then
-            local s
             svc="$(_ntp_service_unit "${unit}")"
-            s="$(systemctl is-active "${svc}" 2>/dev/null || echo unknown)"
-            printf '%s=%s' "${svc}" "${s}"
-            return 0
+            s="$(systemctl is-active "${svc}" 2>/dev/null)" || true
+            if [[ "${s}" == active ]]; then
+                printf '%s=%s' "${svc}" "${s}"
+                return 0
+            fi
+            [[ -n "${first}" ]] || first="${svc}=${s:-unknown}"
         fi
     done
-    echo ""
+    printf '%s' "${first}"
+}
+
+ntp_status_label() {
+    local state
+    state="$(_ntp_service_state)"
+    if [[ -n "${state}" ]]; then
+        printf '%s（%s）' "${state%%=*}" "$(_ntp_service_state_label "${state#*=}")"
+    else
+        printf '未检测到已知服务（或无法读取）'
+    fi
 }
 
 _timedatectl_status_value() {
     local key="$1"
-    timedatectl status 2>/dev/null \
+    LC_ALL=C timedatectl status 2>/dev/null \
         | grep -Ei "^[[:space:]]*${key}:" \
         | head -n 1 \
         | sed -E 's/^[^:]+:[[:space:]]*//'
@@ -2953,7 +2995,7 @@ EOF
         synced="$(_timedatectl_status_value 'System clock synchronized')"
     fi
     svc_state="$(_ntp_service_state)"
-    service_line="未检测到"
+    service_line="未检测到已知服务（或无法读取）"
     svc_status=""
     if [[ -n "${svc_state}" ]]; then
         svc_unit="${svc_state%%=*}"
@@ -2971,16 +3013,19 @@ EOF
 
     case "${synced}" in
         yes)
-            sync_result="已同步"
-            note="本地时间与 UTC 时间不同是正常现象，差值来自时区偏移。"
+            sync_result="已同步（系统报告）"
+            note="同步结果来自系统报告，不代表本机 NTP 服务正在运行；服务状态单独列出。本地时间与 UTC 时间的差值来自时区。"
             ;;
         no)
-            if [[ -z "${svc_state}" && ( "${ntp_service}" == "n/a" || -z "${ntp_service}" ) ]]; then
-                sync_result="未同步"
-                note="当前系统没有可用 NTP 服务，仅执行 timedatectl set-ntp true 通常不会生效。"
-            else
+            if [[ "${svc_status}" == active || "${ntp_service}" == active ]]; then
                 sync_result="尚未同步完成"
                 note="NTP 服务已运行，但首次同步可能需要几十秒。"
+            elif [[ -z "${svc_state}" && ( "${ntp_service}" == "n/a" || -z "${ntp_service}" ) ]]; then
+                sync_result="未同步"
+                note="未检测到已知本机 NTP 服务或无法读取状态，请先检查服务；仅执行 timedatectl set-ntp true 不一定生效。"
+            else
+                sync_result="未同步"
+                note="已检测到本机 NTP 服务，但未确认其正在运行，请检查上方服务状态。"
             fi
             ;;
         *)
@@ -3014,18 +3059,21 @@ detect_ntp_unit() {
         return
     fi
     if [[ "${OS_FAMILY}" == "rhel" ]]; then
-        prefer_order=(chronyd chrony systemd-timesyncd)
+        prefer_order=(chronyd chrony systemd-timesyncd ntpd ntp ntpsec openntpd)
     else
-        prefer_order=(systemd-timesyncd chronyd chrony)
+        prefer_order=(systemd-timesyncd chronyd chrony ntp ntpd ntpsec openntpd)
     fi
-    local unit
+    local unit first=""
     for unit in "${prefer_order[@]}"; do
         if _ntp_unit_exists "${unit}"; then
-            _ntp_service_unit "${unit}"
-            return 0
+            if _ntp_unit_active "${unit}"; then
+                _ntp_service_unit "${unit}"
+                return 0
+            fi
+            [[ -n "${first}" ]] || first="$(_ntp_service_unit "${unit}")"
         fi
     done
-    echo ""
+    printf '%s' "${first}"
 }
 
 enable_ntp_unit() {
@@ -4019,7 +4067,8 @@ status_line() {
     else
         echo "ShadowTLS: ${stls_label} / ${stls_active}  端口: ${stls_port_disp}"
     fi
-    echo "时间同步: $(time_status_label)  快捷命令: $(shortcut_status_label)"
+    echo "系统时钟: $(time_status_label)  快捷命令: $(shortcut_status_label)"
+    echo "NTP 服务: $(ntp_status_label)"
 }
 
 # 快捷命令 3 态：

@@ -19,6 +19,8 @@
 - ☐ `bash -n install.sh` 通过
 - ☐ `bash tests/test-ssserver-compat.sh` 通过（模拟包与命令，不安装服务）
 - ☐ `bash tests/test-firewall-notice.sh` 通过（模拟防火墙，不修改系统规则）
+- ☐ `bash tests/test-time-status.sh` 通过（模拟 NTP 单元属性、运行状态和系统时钟报告，不修改服务）
+- ☐ `python3 tests/test-download-http.py` 通过（仅本机 HTTP 服务；真实 curl 覆盖中断续传、拒绝续传、416、503、404；模拟 curl 28 验证重试上限）
 - ☐ **(v1.0.21)** Debian 12 / glibc 2.36 下载 v1.25.0 的 x86_64 musl 发布包后，`ssserver --version` 成功；用回环地址启动并确认监听成功
 - ☐ **(v1.0.21)** 已有 GNU 版因缺少 GLIBC 无法启动时，重装不跳过下载；同版本一键更新显示需修复，成功后保留原端口、密钥和配置
 - ☐ 仓库根目录存在：`ss2022-shadowtls-manager.sh`、`install.sh`、`README.md`、`CHANGELOG.md`、`TESTING.md`、`.github/workflows/syntax.yml`
@@ -41,13 +43,13 @@
 - ☐ `install.sh` 创建或更新本项目 `/usr/local/bin/ss2022` wrapper；已存在但缺少本项目标记时不覆盖
 - ☐ `install.sh` 不安装 systemd 服务、不动 nftables、不动防火墙
 - ☐ **(v1.0.16)** `install.sh` 不安装 `qrencode` / BBR / 防火墙 / nftables，不启动 `ss2022.service`，只准备脚本运行环境
-- ☐ **(v1.0.20)** bootstrap 依赖完成后、下载主脚本前，`install.sh` 以 `[2/4] 检查时间同步` 检测 NTP 服务；已有 `systemd-timesyncd` / `chrony` / `chronyd` 时块状显示已检测到的 `.service`
+- ☐ **(v1.0.23)** bootstrap 依赖完成后、下载主脚本前，`install.sh` 分别显示系统时钟报告和已知 NTP 服务；使用 `LoadState` 属性，不依赖列表文本；覆盖 systemd-timesyncd / chrony / chronyd / ntp / ntpd / ntpsec / openntpd
 - ☐ **(v1.0.20)** 干净新机器无 NTP 服务时运行一行安装：
   - ☐ 不询问是否安装 chrony
   - ☐ 不执行 apt/dnf/yum 安装 chrony
   - ☐ 不执行 `systemctl enable --now chrony` / `systemctl enable --now chronyd`
   - ☐ 不生成 `/tmp/ss2022-bootstrap-chrony-install.$$.log`
-  - ☐ 只显示 `未检测到 NTP 服务。`、时间敏感说明、手动安装 chrony 命令和菜单内查看路径
+  - ☐ 显示 `未检测到已知的本机 NTP 服务（也可能无法读取服务状态）。`，明确服务检测结果不等同于时钟同步结果，再给出可选手动命令
   - ☐ 继续进入菜单，不因缺少 NTP 服务退出或阻塞
 - ☐ **(v1.0.20)** 第二次运行一行安装时，NTP 检查显示路径不应与第一次有明显显示差异；不能依赖第二次已有 chrony / 状态变化来绕过首次路径
 - ☐ **(v1.0.20)** `install.sh` 首次安装路径输出必须固定左对齐，不使用居中、多列、动态宽度或补空格排版
@@ -115,6 +117,7 @@
   - 不预期：菜单卡住，或 apt/dpkg 输出与提示混在一起
 - ☐ **(v1.0.20)** `grep -nE "是否现在尝试安装并启用 chrony|ss2022-chrony-install|apt-get install -y chrony|dnf install -y chrony|yum install -y chrony" ss2022-shadowtls-manager.sh` 命中项仅为手动命令提示文案，无实际执行路径
 - ☐ 系统已有 NTP 服务（`chrony` / `chronyd` / `systemd-timesyncd`）时自动校准时间：
+  - 预期：停止的 timesyncd 不遮蔽正在运行的 chrony；状态栏分别显示系统时钟和 NTP 服务，inactive 仅显示未运行，不追加 unknown
   - 预期：`detect_ntp_unit` 命中并显示 `使用 NTP 服务：<unit>`，启用并最多等待 30 秒检查同步
   - 预期：同步完成提示 `系统时间已同步。`；首次未同步且 unit active 时提示 `NTP 服务已运行，但尚未完成同步。` 与 `首次同步可能需要几十秒，请稍后再次查看。`
 - ☐ `NTP service: active` 但 `System clock synchronized: no`
@@ -307,7 +310,7 @@
 
 - ☐ README 一行安装命令可被复制粘贴运行
 - ☐ README 显示当前版本号与 SCRIPT_VERSION 常量一致
-- ☐ install.sh 包含 `readonly INSTALLER_VERSION="v1.0.22"`，并与 MANAGER_VERSION / SCRIPT_VERSION 一致
+- ☐ install.sh 包含 `readonly INSTALLER_VERSION="v1.0.23"`，并与 MANAGER_VERSION / SCRIPT_VERSION 一致
 - ☐ CHANGELOG 包含从 v0.1.0 到当前版本的条目
 - ☐ TESTING.md（本文件）与实际行为一致
 

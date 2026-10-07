@@ -21,7 +21,7 @@
 set -o pipefail
 umask 077
 
-readonly INSTALLER_VERSION="v1.0.22"
+readonly INSTALLER_VERSION="v1.0.23"
 readonly SCRIPT_URL="https://raw.githubusercontent.com/misaka-cpu/ss2022-shadowtls-manager/main/ss2022-shadowtls-manager.sh"
 readonly INSTALL_PATH="/root/ss2022-shadowtls-manager.sh"
 readonly SHORTCUT_PATH="/usr/local/bin/ss2022"
@@ -260,20 +260,24 @@ ensure_bootstrap_deps
 # -----------------------------------------------------------------------------
 # 检测系统已有的 NTP 守护服务，命中则输出 unit 名。
 detect_ntp_unit() {
-    local unit
+    local unit load_state first=""
     have_cmd systemctl || return 0
-    for unit in systemd-timesyncd.service chrony.service chronyd.service; do
-        if systemctl list-unit-files "${unit}" 2>/dev/null | grep -q "^${unit}"; then
-            printf '%s' "${unit}"
-            return 0
+    for unit in systemd-timesyncd.service chrony.service chronyd.service ntp.service ntpd.service ntpsec.service openntpd.service; do
+        load_state="$(systemctl show --property=LoadState --value "${unit}" 2>/dev/null)" || continue
+        if [[ "${load_state}" == loaded || "${load_state}" == masked ]]; then
+            if systemctl is-active --quiet "${unit}" 2>/dev/null; then
+                printf '%s' "${unit}"
+                return 0
+            fi
+            [[ -n "${first}" ]] || first="${unit}"
         fi
     done
-    return 0
+    printf '%s' "${first}"
 }
 
 print_chrony_manual_commands() {
     cat <<'EOF'
-建议稍后手动安装 chrony:
+如需安装 chrony，可手动执行（已有可用校时服务时无需重复安装）:
 
 Debian/Ubuntu:
   apt-get update
@@ -295,16 +299,25 @@ EOF
 ensure_ntp_service() {
     print_stage "2/4" "检查时间同步"
 
-    local unit
+    local unit synced=""
+    if have_cmd timedatectl; then
+        synced="$(timedatectl show -p NTPSynchronized --value 2>/dev/null)" || synced=""
+    fi
+    case "${synced}" in
+        yes) printf '系统时钟：已同步（系统报告）\n\n' ;;
+        no)  printf '系统时钟：未同步（系统报告）\n\n' ;;
+        *)   printf '系统时钟：未能确认\n\n' ;;
+    esac
     unit="$(detect_ntp_unit)"
     if [[ -n "${unit}" ]]; then
-        printf '已检测到 NTP 服务:\n'
+        printf '已检测到本机 NTP 服务:\n'
         printf '  %s\n\n' "${unit}"
         return 0
     fi
 
     cat <<'EOF'
-未检测到 NTP 服务。
+未检测到已知的本机 NTP 服务（也可能无法读取服务状态）。
+服务检测结果不等同于系统时钟同步结果。
 
 SS2022 对系统时间较敏感。
 时间偏差过大可能导致 invalid timestamp。

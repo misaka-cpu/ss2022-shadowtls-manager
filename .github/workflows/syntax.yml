@@ -6,10 +6,12 @@ on:
     branches: [ main, master, "v*" ]
     paths:
       - "**.sh"
+      - "tests/**"
       - ".github/workflows/syntax.yml"
   pull_request:
     paths:
       - "**.sh"
+      - "tests/**"
       - ".github/workflows/syntax.yml"
   workflow_dispatch:
 
@@ -40,6 +42,12 @@ jobs:
 
       - name: firewall notice regression
         run: bash tests/test-firewall-notice.sh
+
+      - name: time status regression
+        run: bash tests/test-time-status.sh
+
+      - name: download retry and resume (loopback HTTP only)
+        run: python3 tests/test-download-http.py
 
       # 软性 shellcheck —— 输出供阅读，不阻断 CI
       - name: shellcheck (informational only, never fails the build)
