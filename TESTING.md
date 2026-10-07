@@ -18,6 +18,7 @@
 - ☐ `bash -n ss2022-shadowtls-manager.sh` 通过
 - ☐ `bash -n install.sh` 通过
 - ☐ `bash tests/test-ssserver-compat.sh` 通过（模拟包与命令，不安装服务）
+- ☐ `bash tests/test-install-state.sh` 通过（需要 jq；使用临时状态 / 配置文件和模拟服务，覆盖旧标记、首次失败、写入失败、启动失败、取消和重装）
 - ☐ `bash tests/test-firewall-notice.sh` 通过（模拟防火墙，不修改系统规则）
 - ☐ `bash tests/test-time-status.sh` 通过（模拟 NTP 单元属性、运行状态和系统时钟报告，不修改服务）
 - ☐ `python3 tests/test-download-http.py` 通过（仅本机 HTTP 服务；真实 curl 覆盖中断续传、拒绝续传、416、503、404；模拟 curl 28 验证重试上限）
@@ -75,6 +76,10 @@
 - ☐ **(v1.0.19)** 主菜单分隔线固定为 `------------------------------------------------------------`
 - ☐ 状态栏按左对齐短行显示：版本/监听模式、IPv4、IPv6、SS2022、ShadowTLS、时间同步 + 快捷命令
 - ☐ **未安装态**：SS2022 端口/模式显示 N/A；ShadowTLS 端口显示 N/A
+- ☐ **(v1.0.24)** 仅有旧版 `installed=true` 标记但没有实际文件：菜单显示未安装，选择安装不应警告“SS2022 已安装”；下载再失败后标记为 false
+- ☐ **(v1.0.24)** 首次安装在下载、状态保存、配置写入、服务写入或启动阶段失败：不得记录成功或输出安装完成；所有阶段成功后才写入 installed=true
+- ☐ **(v1.0.24)** 安装不完整但已有配置 / 服务文件：提示“未完成安装或残留配置”并要求确认；取消不得修改已有配置，确认后仍备份已有配置
+- ☐ **(v1.0.24)** 正常重装仍先确认；取消和下载失败不改变原参数，启动失败不清除之前的已安装标记，也不得输出本次安装成功
 - ☐ 快捷命令未安装时显示 "未安装"；本项目 wrapper 已安装显示 "ss2022"；存在同名非本项目文件显示 "冲突"
 - ☐ 时间同步未配置时显示 "未检测"；已同步显示 "已同步"
 - ☐ **(v1.0.19)** 服务管理 / 网络与时间 / 高级设置子菜单显示为固定左对齐文本
@@ -310,7 +315,7 @@
 
 - ☐ README 一行安装命令可被复制粘贴运行
 - ☐ README 显示当前版本号与 SCRIPT_VERSION 常量一致
-- ☐ install.sh 包含 `readonly INSTALLER_VERSION="v1.0.23"`，并与 MANAGER_VERSION / SCRIPT_VERSION 一致
+- ☐ install.sh 包含 `readonly INSTALLER_VERSION="v1.0.24"`，并与 MANAGER_VERSION / SCRIPT_VERSION 一致
 - ☐ CHANGELOG 包含从 v0.1.0 到当前版本的条目
 - ☐ TESTING.md（本文件）与实际行为一致
 

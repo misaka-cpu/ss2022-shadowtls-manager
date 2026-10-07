@@ -40,6 +40,9 @@ jobs:
       - name: ssserver compatibility regression
         run: bash tests/test-ssserver-compat.sh
 
+      - name: installation state regression
+        run: bash tests/test-install-state.sh
+
       - name: firewall notice regression
         run: bash tests/test-firewall-notice.sh
 

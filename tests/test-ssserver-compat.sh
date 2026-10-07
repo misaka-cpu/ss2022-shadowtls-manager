@@ -87,6 +87,7 @@ printf 'PASS: download/write failures do not report success or record a version\
 
 # Stub only interactive/service operations; use the real reinstall/download logic.
 install_dependencies() { :; }
+is_ss2022_installed() { return 0; }
 ensure_project_dirs() { :; }
 hint_time_before_install() { :; }
 is_valid_port() { return 0; }

@@ -18,10 +18,10 @@ umask 077
 # 常量与路径定义（仅允许操作以下路径）
 # -----------------------------------------------------------------------------
 # 项目唯一版本常量；远程升级时从该常量提取版本号
-readonly MANAGER_VERSION="v1.0.23"
+readonly MANAGER_VERSION="v1.0.24"
 # 别名：兼容仍在 v0.1.5 及更早版本的客户端进行远程版本探测（它们 grep SCRIPT_VERSION）
 # 必须使用字面量字符串而非 "${MANAGER_VERSION}"，否则旧版客户端 grep + sed 提取到的是字面 ${MANAGER_VERSION}
-readonly SCRIPT_VERSION="v1.0.23"
+readonly SCRIPT_VERSION="v1.0.24"
 
 # 菜单返回码约定（v0.1.5）：
 #   - 普通返回（默认 0 / 非 10）：调用方按既有规则处理 press_any_key
@@ -357,10 +357,10 @@ info_set() {
     if ! tmp="$(mktemp --tmpdir="${info_dir}" info.XXXXXX 2>/dev/null)" \
             || [[ -z "${tmp}" || ! -f "${tmp}" ]]; then
         log_warn "更新 info.json 失败：创建临时文件失败 (${path})"
-        return
+        return 1
     fi
-    if jq "${path} = ${value}" "${PROJECT_INFO}" > "${tmp}" 2>/dev/null; then
-        mv -f -- "${tmp}" "${PROJECT_INFO}"
+    if jq "${path} = ${value}" "${PROJECT_INFO}" > "${tmp}" 2>/dev/null \
+            && mv -f -- "${tmp}" "${PROJECT_INFO}"; then
         chmod 600 "${PROJECT_INFO}"
     else
         # tmp 路径必在 info.json 同目录（PROJECT_ETC 内），路径前缀校验后再删
@@ -368,6 +368,7 @@ info_set() {
             rm -f -- "${tmp}"
         fi
         log_warn "更新 info.json 失败：${path}"
+        return 1
     fi
 }
 
@@ -940,7 +941,11 @@ EOF
         safe_remove_tmpfile "${tmp}"
         return 1
     fi
-    install -m 0600 "${tmp}" "${SS_CONFIG}"
+    if ! install -m 0600 "${tmp}" "${SS_CONFIG}"; then
+        safe_remove_tmpfile "${tmp}"
+        log_error "写入 SS2022 配置失败：${SS_CONFIG}"
+        return 1
+    fi
     safe_remove_tmpfile "${tmp}"
     log_ok "已写入 SS2022 配置：${SS_CONFIG}"
 }
@@ -1002,7 +1007,11 @@ NoNewPrivileges=true
 [Install]
 WantedBy=multi-user.target
 EOF
-    install -m 0644 "${tmp}" "${SS_SERVICE}"
+    if ! install -m 0644 "${tmp}" "${SS_SERVICE}"; then
+        safe_remove_tmpfile "${tmp}"
+        log_error "写入 SS2022 服务失败：${SS_SERVICE}"
+        return 1
+    fi
     safe_remove_tmpfile "${tmp}"
     systemctl daemon-reload >/dev/null 2>&1 || true
     log_ok "已写入 systemd：${SS_SERVICE}"
@@ -1245,11 +1254,24 @@ install_ss2022() {
     ensure_project_dirs
     hint_time_before_install
 
-    # 现有安装提示
-    if [[ "$(info_get '.ss2022.installed')" == "true" ]]; then
+    # 与主菜单使用同一判断；安装不完整但已有文件时仍须确认，避免覆盖用户配置。
+    local was_installed=0 need_confirm=0
+    if is_ss2022_installed; then
+        was_installed=1
+        need_confirm=1
         log_warn "SS2022 已安装，继续将重装并覆盖配置（旧配置会备份）"
+    elif [[ -f "${SS_CONFIG}" || -f "${SS_SERVICE}" ]]; then
+        need_confirm=1
+        log_warn "检测到未完成安装或残留配置，继续将重新配置（已有配置会备份）"
+    elif [[ "$(info_get '.ss2022.installed')" == "true" ]]; then
+        log_info "检测到上次安装失败留下的状态标记，将重新尝试安装"
+    fi
+    if (( need_confirm )); then
         read -r -p "是否继续? [y/N]: " ans
         [[ "${ans}" =~ ^[Yy]$ ]] || { log_info "已取消"; return; }
+    fi
+    if (( ! was_installed )); then
+        info_set ".ss2022.installed" "false" || return 1
     fi
 
     # 选择加密方式
@@ -1332,18 +1354,7 @@ install_ss2022() {
         *) mode="tcp_and_udp" ;;
     esac
 
-    # 监听模式
-    set_listen_mode_interactive
-
-    # 写入状态
-    info_set ".ss2022.installed"   "true"
-    info_set ".ss2022.method"      "\"${method}\""
-    info_set ".ss2022.password"    "$(jq -nr --arg v "${password}" '$v|tojson')"
-    info_set ".ss2022.public_port" "${port}"
-    info_set ".ss2022.local_port"  "${port}"
-    info_set ".ss2022.mode"        "\"${mode}\""
-
-    # 下载二进制
+    # 先确保二进制可用；下载失败时不覆盖之前保存的节点参数。
     if ! ssserver_usable; then
         [[ -e "${SS_BINARY}" ]] && log_warn "已有 ssserver 无法运行，将重新下载兼容的 musl 版本"
         download_shadowsocks_rust "" || { log_error "ssserver 安装失败"; return 1; }
@@ -1351,8 +1362,16 @@ install_ss2022() {
         log_info "ssserver 已存在，跳过下载（可通过主菜单「一键检查更新」更新）"
     fi
 
+    # 监听模式与待安装参数；首次安装成功前保持 installed=false。
+    set_listen_mode_interactive
+    info_set ".ss2022.method"      "\"${method}\"" || return 1
+    info_set ".ss2022.password"    "$(jq -nr --arg v "${password}" '$v|tojson')" || return 1
+    info_set ".ss2022.public_port" "${port}" || return 1
+    info_set ".ss2022.local_port"  "${port}" || return 1
+    info_set ".ss2022.mode"        "\"${mode}\"" || return 1
+
     write_ss2022_config || return 1
-    write_ss2022_service
+    write_ss2022_service || return 1
 
     # 防火墙
     local stls_enabled
@@ -1366,6 +1385,10 @@ install_ss2022() {
     fi
 
     restart_service "${SS_SERVICE_NAME}" || return 1
+    if ! info_set ".ss2022.installed" "true"; then
+        log_error "服务已启动，但保存安装状态失败，请检查状态文件权限与磁盘空间"
+        return 1
+    fi
     refresh_public_ips
     log_ok "SS2022 安装完成"
 
