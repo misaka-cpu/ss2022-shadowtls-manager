@@ -4,7 +4,7 @@ SS2022 + ShadowTLS v3 一体化管理脚本，适用于 Debian / Ubuntu / CentOS
 
 ## 当前状态
 
-- 当前版本：**v1.0.22**
+- 当前版本：**v1.0.23**
 - 状态：**稳定版**
 - 已在 Debian / Ubuntu / CentOS 9 上经过实测；仍建议先在干净 Debian / Ubuntu / CentOS 测试后再用于长期环境
 
@@ -16,7 +16,7 @@ SS2022 + ShadowTLS v3 一体化管理脚本，适用于 Debian / Ubuntu / CentOS
 4. **安装/启用完成直接显示完整文字链接**：只在终端输出推荐 ss:// / SS+ShadowTLS 合并链接，无需再去其它菜单，亦不渲染图像、不保存任何文件
 5. **支持 IPv4 / IPv6 / 双栈**：URI 自动加 `[ ]`、`[::]:port` 监听拼接精确
 6. **支持 sing-box / mihomo / Clash Meta / Shadowrocket / Surge 客户端配置输出**
-7. **支持时间同步检查和校准**：按发行版自动选择 `systemd-timesyncd` / `chronyd` / `chrony`；`install.sh` bootstrap 阶段只检查 NTP 服务并提示手动安装 chrony，主菜单内只使用已有 NTP 服务
+7. **支持时间同步检查和校准**：分别显示系统报告的时钟状态和本机 NTP 服务状态；识别 `systemd-timesyncd` / `chronyd` / `chrony` / `ntp` / `ntpd` / `ntpsec` / `openntpd`，优先选择运行中的服务；不自动安装 chrony
 8. **统一一键检查更新**：管理脚本本体 + `shadowsocks-rust` + `shadow-tls` + 快捷命令 wrapper 一表呈现，下载后 `bash -n` 校验通过才覆盖
 9. **一键完整卸载**：严格停服 + 残留进程 TERM/KILL + 端口释放检测，删除项目配置且不备份；卸载前需自行保存节点信息，完成后显示详细总结
 10. **安全边界**：
@@ -50,6 +50,8 @@ bash <(curl -fsSL https://raw.githubusercontent.com/misaka-cpu/ss2022-shadowtls-
 
 进入菜单后，选择 `1) 一键安装 / 重装`，按提示配置端口、密码和转发模式。针对 glibc 兼容性问题，应确认管理脚本为 **v1.0.21 或更新版本**，下载文件名包含 `unknown-linux-musl.tar.xz`。
 
+从 **v1.0.23** 起，shadowsocks-rust / ShadowTLS 发布文件下载单次最多 600 秒、连接最多 20 秒；持续 60 秒低于 1 KiB/s 会中断并重试。网络中断、超时或可重试 HTTP 错误最多尝试 3 次，间隔 2 秒，在**本次安装内**利用已下载部分续传；服务端不支持续传时从头下载。最终失败仍清理临时文件，不跨安装保留下载缓存。遇到旧版 `curl: (28)` / 120 秒超时，可重新执行一行安装加载新版后再选 `1`，无需完整卸载。
+
 **已执行一键完整卸载：** 重新运行上面的命令，按全新安装流程配置即可。完整卸载不会保留或自动恢复原端口、密码等配置；安装完成后，按新节点信息更新客户端。
 
 **仍保留安装但遇到 `GLIBC_2.38` / `GLIBC_2.39 not found`：** 先运行上面的命令加载新版管理脚本，再选择 `7) 一键检查更新`。当 shadowsocks-rust 显示 `需修复（ssserver 无法运行）` 时，确认执行更新，即使版本号相同也会重新下载可运行的程序，保留现有端口、密码和配置。
@@ -58,7 +60,7 @@ bash <(curl -fsSL https://raw.githubusercontent.com/misaka-cpu/ss2022-shadowtls-
 
 1. 检查 root
 2. **自动准备主脚本运行所需的全部必需依赖**（`ca-certificates curl jq xz-utils iproute2 dnsutils` / RHEL 系为 `... xz iproute bind-utils`），并做二次检查
-3. **若系统缺少 NTP 服务**（systemd-timesyncd / chrony / chronyd 均无），只显示手动安装 `chrony` 的命令，不询问 y/N、不自动安装
+3. 分别读取系统时钟同步报告和已知 NTP 服务；通过 `systemctl show` 的 `LoadState` 属性检测服务，不解析服务列表。未检测到已知服务或无法读取状态时，只给出可选手动安装 `chrony` 的命令，不询问 y/N、不自动安装
 4. 下载主脚本到 `/tmp` 临时文件并执行 `bash -n` 校验
 5. 备份旧版本并安装主脚本
 6. 创建或更新本项目的 `ss2022` 快捷命令
@@ -68,7 +70,7 @@ bash <(curl -fsSL https://raw.githubusercontent.com/misaka-cpu/ss2022-shadowtls-
 >
 > 若进入菜单后仍提示缺依赖，请重新运行上面的一行安装命令让 `install.sh` 自动修复，或按提示手动安装依赖后再运行 `ss2022`。
 
-> SS2022 对系统时间较敏感。若检测到系统没有 NTP 服务，`install.sh` 只显示手动安装 `chrony` 的命令，不询问 y/N、不执行 `apt`/`dnf`/`yum` 安装 chrony。这样可以避免新机器首次安装时 chrony 安装路径卡住或输出错乱。**主菜单的「网络与时间 → 自动校准时间」只使用系统已有 NTP 服务、不会执行 `apt`/`dnf`/`yum`**；可按提示手动安装 chrony 后再回菜单校准时间。
+> SS2022 对系统时间较敏感。“已同步（系统报告）”不等于“本机 NTP 服务正在运行”，未检测到已知服务也不等于时钟未同步；请分别查看两项状态。已有可用校时服务时无需再安装 chrony。**主菜单的「网络与时间 → 自动校准时间」只使用系统已有 NTP 服务、不会执行 `apt`/`dnf`/`yum`**；确实缺少校时服务时，可按提示手动安装 chrony 后再回菜单校准时间。
 
 > 仓库 Private 时 `raw.githubusercontent.com` 无法直接访问，请改用 `scp` 或 `git pull` 把 `ss2022-shadowtls-manager.sh` 同步到 `/root/`，然后 `chmod +x && /root/ss2022-shadowtls-manager.sh`。
 
@@ -106,13 +108,14 @@ ss2022
 ## 主菜单
 
 ```
-SS2022 + ShadowTLS 管理脚本 v1.0.22
-版本: v1.0.22  监听模式: dual
+SS2022 + ShadowTLS 管理脚本 v1.0.23
+版本: v1.0.23  监听模式: dual
 IPv4: x.x.x.x
 IPv6: xxxx::xxxx
 SS2022: 已安装 / 运行中  端口: 18388  模式: tcp_only
 ShadowTLS: 已启用 / 运行中  端口: 8443  伪装: www.bing.com
-时间同步: 已同步  快捷命令: ss2022
+系统时钟: 已同步（系统报告）  快捷命令: ss2022
+NTP 服务: systemd-timesyncd.service（运行中）
 ------------------------------------------------------------
 主菜单:
   1) 一键安装 / 重装
@@ -213,7 +216,8 @@ ShadowTLS: 已启用 / 运行中  端口: 8443  伪装: www.bing.com
 - **v1.0.19**：紧急修复主菜单和子菜单在 SSH 终端中的错乱显示；菜单输出改为固定左对齐文本；移除菜单区域的清屏、颜色状态词、动态宽度和补空格排版；避免中文宽度导致菜单错位；功能逻辑不变
 - **v1.0.20**：`install.sh` 取消 chrony 交互安装；无 NTP 服务时仅提示手动安装命令；避免新机器首次安装时 chrony 路径导致输出错乱；bootstrap 只负责主脚本必需依赖
 - **v1.0.21**：改用 musl 静态版 ssserver，安装前验证二进制能否运行；重装及一键更新可修复同版本的 glibc 不兼容二进制。
-- **v1.0.22**（当前）：nftables 改为普通信息提示，移除未经检测的管理项目名称及固定表/链的示例命令；TCP+UDP 合并提示，保留 ufw/firewalld 的逐协议确认流程。
+- **v1.0.22**：nftables 改为普通信息提示，移除未经检测的管理项目名称及固定表/链的示例命令；TCP+UDP 合并提示，保留 ufw/firewalld 的逐协议确认流程。
+- **v1.0.23**（当前）：NTP 检测改读服务属性并优先运行中的服务，分开显示时钟与服务状态；发布文件下载延长超时、有限重试和本次安装内断点续传。
 - **v1.0.x**：仅修复缺陷，不引入 breaking change
 
 ## 贡献 / 反馈
